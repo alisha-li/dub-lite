@@ -9,6 +9,8 @@
 #     6.1 overlay with dubbed audio
 # 7.  ffmpeg combine audio with video
 
+# ***REMOVED***
+
  # TODO:
  # fix download to override current orig_video
  # Add your other pipeline steps here
@@ -23,6 +25,7 @@
 # test video: https://www.youtube.com/watch?v=jIZkKsf6VYo
     
 import os
+import subprocess
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -37,6 +40,9 @@ import pickle
 from transformers import MarianTokenizer, MarianMTModel
 from groq import Groq
 from TTS.api import TTS
+from audio_separator.separator import Separator
+import pypinyin
+from pyannoteai.sdk import Client
 
 
 class YTDubPipeline:
@@ -44,7 +50,7 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self, url: str, src: str, targ: str, hf_token: str):
+    def dub(self, url: str, src: str, targ: str, hf_token: str, segmentsPickle: bool, timeSentencePickle: bool):
         # 1. Download video using yt-dlp package
         try:
             print(f"Starting dubbing pipeline for: {url}")
@@ -61,11 +67,21 @@ class YTDubPipeline:
         except Exception as e:
             raise Exception(f"Video download failed: {str(e)}")
 
+        client = Client("***REMOVED***")
+        audio_url = client.upload("temp/orig_audio.wav")
+        orchestration_job = client.diarize(audio_url, transcription=True)
+        orchestration = client.retrieve(orchestration_job)
+        for turn in orchestration['output']['turnLevelTranscription'][:10]:
+            print(f"{turn['speaker']} [{turn['start']:6.3f}s — {turn['end']:6.3f}s] {turn['text']}")
+        with open("temp/orchestration.json", "wb") as f:
+            pickle.dump(orchestration['output']['turnLevelTranscription'], f)
+
+
         # 2. Speaker Diarization
         try:
             # Check if we already have segments saved
             segments_file = "temp/segments.pkl"
-            if os.path.exists(segments_file):
+            if segmentsPickle:
                 print("Loading existing data from file...")
                 with open(segments_file, "rb") as f:
                     saved_data = pickle.load(f)
@@ -168,9 +184,14 @@ class YTDubPipeline:
             for sentence in sentences:
                 sentence_words = sentence.split()  # Split sentence into words
                 sentence_words = [word.strip('.,!?;:') for word in sentence_words]
-                wordCount += len(sentence_words)
                 
-                timeSentences.append([sentence, time_stamped[wordCount-1][1], time_stamped[wordCount-1][2]])
+              
+                first_word_idx = wordCount  
+                wordCount += len(sentence_words)
+                last_word_idx = wordCount - 1  
+                
+                # Start time = first word's start, End time = last word's end
+                timeSentences.append([sentence, time_stamped[first_word_idx][1], time_stamped[last_word_idx][2]])
 
             print("First 5 timeSentences:")
             for i, item in enumerate(timeSentences[:5]):
@@ -227,129 +248,175 @@ class YTDubPipeline:
             # tokenizer = MarianTokenizer.from_pretrained(model_name)
             # model = MarianMTModel.from_pretrained(model_name).to('cpu')
 
-            for i in range(len(timeSentences)):
-                sentence, start, end = timeSentences[i]
-                
-                # Check overlap with each speaker's time range
-                for times, speaker in speakers_rolls.items():
-                    speaker_start =  int(times[0])
-                    speaker_end = int(times[1])
-                    if speaker_start > end or speaker_end < start:
-                        break
-                        
-                    max_overlap = 0
-                    overlap_start = max(start, speaker_start)
-                    overlap_end = min(end, speaker_end)
-                    overlap = overlap_end - overlap_start
+
+            if timeSentencePickle:
+                with open("temp/timeSentences.pkl", "rb") as f:
+                    timeSentences = pickle.load(f)
+            else:
+                for i in range(len(timeSentences)):
+                    sentence, start, end = timeSentences[i]
                     
-                    # Update speaker if this overlap is greater than previous ones
-                    if overlap > max_overlap:
-                        max_overlap = overlap
-                        timeSentences[i].append(speaker)
+                    sentence_speaker = None
+                    max_overlap = 0
+                    # Check overlap with each speaker's time range
+                    for times, speaker in speakers_rolls.items():
+                        speaker_start =  int(times[0])
+                        speaker_end = int(times[1])
+                        if speaker_start > end or speaker_end < start:
+                            continue
+                            
+                        overlap_start = max(start, speaker_start)
+                        overlap_end = min(end, speaker_end)
+                        overlap = overlap_end - overlap_start
+                        
+                        # Update speaker if this overlap is greater than previous ones
+                        if overlap > max_overlap:
+                            max_overlap = overlap
+                            sentence_speaker = speaker
 
-                if i == 0:
-                    translatedSentence = translate(timeSentences[i][0], "", timeSentences[i+1][0], targ)
-                elif i == len(timeSentences) - 1:
-                    translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], "", targ)
-                else:
-                    translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], timeSentences[i+1][0], targ)
-                
-                timeSentences[i].append(translatedSentence)
-        
-                classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
+                    timeSentences[i].append(sentence_speaker)
 
-                start=start*1000
-                end=end*1000
-
-                try:
-                    os.makedirs("temp/emotions_audio", exist_ok=True)
-                    audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
-                    out_prob, score, index, text_lab = classifier.classify_file("temp/emotions_audio/emotions.wav")
-                    os.remove("temp/emotions_audio/emotions.wav")
-                except Exception as e:
-                    print(f"Error classifying emotions: {str(e)}")
-                    text_lab = ['None']
-                
-                timeSentences[i].append(text_lab[0])
+                    if i == 0:
+                        translatedSentence = translate(timeSentences[i][0], "", timeSentences[i+1][0], targ)
+                    elif i == len(timeSentences) - 1:
+                        translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], "", targ)
+                    else:
+                        translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], timeSentences[i+1][0], targ)
+                    
+                    timeSentences[i].append(translatedSentence)
             
-            # Save timeSentences to pickle file
-            with open("temp/timeSentences.pkl", "wb") as f:
-                pickle.dump(timeSentences, f)
+                    classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
+
+                    start=start*1000
+                    end=end*1000
+
+                    try:
+                        os.makedirs("temp/emotions_audio", exist_ok=True)
+                        audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
+                        out_prob, score, index, text_lab = classifier.classify_file("temp/emotions_audio/emotions.wav")
+                        os.remove("temp/emotions_audio/emotions.wav")
+                    except Exception as e:
+                        print(f"Error classifying emotions: {str(e)}")
+                        text_lab = ['None']
+                    
+                    timeSentences[i].append(text_lab[0])
+                
+                # Save timeSentences to pickle file
+                with open("temp/timeSentences.pkl", "wb") as f:
+                    pickle.dump(timeSentences, f)
 
             print("First 20 sentences with emotions")
             for i in range(20):
                 print(str(timeSentences[i]) + "\n")
 
-
-            # if os.path.exists("temp/timeSentences.pkl"):
-            #     with open("temp/timeSentences.pkl", "rb") as f:
-            #         timeSentences = pickle.load(f)
-            # else:
-            #     for i in range(len(timeSentences)):
-            #         sentence, start, end = timeSentences[i]
-                    
-            #         # Check overlap with each speaker's time range
-            #         for times, speaker in speakers_rolls.items():
-            #             speaker_start =  int(times[0])
-            #             speaker_end = int(times[1])
-            #             if speaker_start > end or speaker_end < start:
-            #                 break
-                            
-            #             max_overlap = 0
-            #             overlap_start = max(start, speaker_start)
-            #             overlap_end = min(end, speaker_end)
-            #             overlap = overlap_end - overlap_start
-                        
-            #             # Update speaker if this overlap is greater than previous ones
-            #             if overlap > max_overlap:
-            #                 max_overlap = overlap
-            #                 timeSentences[i].append(speaker)
-
-            #         if i == 0:
-            #             translatedSentence = translate(timeSentences[i][0], "", timeSentences[i+1][0], targ)
-            #         elif i == len(timeSentences) - 1:
-            #             translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], "", targ)
-            #         else:
-            #             translatedSentence = translate(timeSentences[i][0], timeSentences[i-1][0], timeSentences[i+1][0], targ)
-                    
-            #         timeSentences[i].append(translatedSentence)
-            
-            #         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
-
-            #         start=start*1000
-            #         end=end*1000
-
-            #         try:
-            #             os.makedirs("temp/emotions_audio", exist_ok=True)
-            #             audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
-            #             out_prob, score, index, text_lab = classifier.classify_file("temp/emotions_audio/emotions.wav")
-            #             os.remove("temp/emotions_audio/emotions.wav")
-            #         except Exception as e:
-            #             print(f"Error classifying emotions: {str(e)}")
-            #             text_lab = ['None']
-                    
-            #         timeSentences[i].append(text_lab[0])
-                
-            #     # Save timeSentences to pickle file
-            #     with open("temp/timeSentences.pkl", "wb") as f:
-            #         pickle.dump(timeSentences, f)
-
-            # print("First 20 sentences with emotions")
-            # for i in range(20):
-            #     print(str(timeSentences[i]) + "\n")
-
         except Exception as e:
             raise Exception(f"Translation Failed: {str(e)}")
 
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=True)
-        tts.tts_to_file(text=timeSentences[i][0],
-                        file_path=f"audio_chunks/{i}.wav",
-                        speaker_wav=f"speakers_audio/SPEAKER_0{timeSentences[i][4]}.wav",
-                        language=targ,
-                        emotion=timeSentences[i][5],
-                        speed=2)
+        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
+        MIN_SPEED = .8
+        MAX_SPEED = 1.5
+        
+        os.makedirs("temp/audio_chunks", exist_ok=True)
+        os.makedirs("temp/adjAudio_chunks", exist_ok=True)
 
-        return 'temp/orig_video.mp4'  
+        # TTS, speed/slow audio, and add silences
+        for i in range(len(timeSentences)):
+            # TTS
+            tts.tts_to_file(text=timeSentences[i][4],
+                            file_path=f"temp/audio_chunks/{i}.wav",
+                            speaker_wav=f"temp/speakers_audio/{timeSentences[i][3]}.wav",
+                            language=targ,
+                            emotion=timeSentences[i][5],
+                            speed=1.0)  # Generate at normal speed
+            audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
+
+            # speed/slow audio
+            adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
+            trans_dur = len(audio)
+            orig_dur = (timeSentences[i][2] - timeSentences[i][1]) * 1000
+            
+            # Handle zero duration case
+            if orig_dur <= 0:
+                print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
+                audio.export(adjAudioFile, format="wav")
+                continue
+            
+            speed_factor = trans_dur / orig_dur
+            
+            if trans_dur < orig_dur:
+                if speed_factor < MIN_SPEED: #trans_dur significantly shorter than orig_dur
+                    speed_factor = MIN_SPEED
+                
+                # Slow down using frame rate manipulation
+                new_frame_rate = int(audio.frame_rate * speed_factor)
+                adjAudio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
+                adjAudio = adjAudio.set_frame_rate(audio.frame_rate)
+                
+                # If still shorter after slowing, pad with silence
+                if len(adjAudio) < orig_dur:
+                    adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
+                adjAudio.export(adjAudioFile, format="wav")
+            else:
+                if speed_factor > MAX_SPEED:
+                    speed_factor = MAX_SPEED
+                adjAudio = audio.speedup(playback_speed=speed_factor)
+                adjAudio.export(adjAudioFile, format="wav")
+
+        # Stitch chunks together
+        print("Stitching chunks together")
+        final_audio = AudioSegment.empty()
+        curPos = 0
+        for i in range(len(timeSentences)):
+            adjAudioFile = f"temp/adjAudio_chunks/{i}.wav" 
+            adjAudio = AudioSegment.from_wav(adjAudioFile)
+            orig_start = timeSentences[i][1] * 1000
+            pad = orig_start - curPos
+            if pad > 0:
+                final_audio += AudioSegment.silent(duration=pad)
+                print(f"padding: {len(AudioSegment.silent(duration=pad))}ms")
+                curPos = orig_start
+            final_audio += adjAudio
+            curPos += len(adjAudio)
+        
+        final_audio.export("temp/final_audio.wav", format="wav")
+
+        separator = Separator()
+
+        # Load a model
+        separator.load_model(model_filename='2_HP-UVR.pth')
+        background_path = separator.separate("temp/orig_video.mp4")[0]
+        print("background path: ", background_path)
+        audio1 = AudioSegment.from_file("temp/final_audio.wav")
+        audio2 = AudioSegment.from_file(background_path)
+        print("audio1 length: ", len(audio1))
+        print("audio2 length: ", len(audio2))
+        if len(audio1) > len(audio2):
+            audio2 = audio2 + AudioSegment.silent(duration=len(audio1) - len(audio2))
+        elif len(audio1) < len(audio2):
+            audio1 = audio1 + AudioSegment.silent(duration=len(audio2) - len(audio1))
+        combined_audio = audio1.overlay(audio2)
+        combined_audio.export("temp/combined_audio.wav", format="wav")
+        
+        # Combine new audio with original video
+        command = [
+            'ffmpeg',
+            '-i', 'temp/orig_video.mp4',
+            '-i', 'temp/combined_audio.wav',
+            '-c:v', 'copy',  # Copy video stream without re-encoding (fast)
+            '-map', '0:v:0',  # Use video from first input
+            '-map', '1:a:0',  # Use audio from second input
+            '-shortest',  # End when shortest stream ends
+            '-y',  # Overwrite output file if it exists
+            'temp/output_video.mp4'
+        ]
+        print("Combining audio with video using ffmpeg...")
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FFmpeg error: {result.stderr}")
+            raise Exception(f"Failed to combine audio with video: {result.stderr}")
+        print("Video with dubbed audio saved to temp/output_video.mp4")
+
+        return 'temp/output_video.mp4'  
     
 
 
@@ -361,7 +428,7 @@ if __name__ == "__main__":
     # args = parser.parse_args()
 
     pipeline = YTDubPipeline()
-    result = pipeline.dub("https://www.youtube.com/watch?v=jIZkKsf6VYo", "en", "zh", os.getenv('HF_TOKEN'))
+    result = pipeline.dub("https://www.youtube.com/watch?v=jIZkKsf6VYo", "en", "zh", os.getenv('HF_TOKEN'), True, False)
     print(f"dubbed video path: {result}")
                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
 
