@@ -67,6 +67,20 @@ class YTDubPipeline:
         except Exception as e:
             raise Exception(f"Video download failed: {str(e)}")
 
+        # 1.5. Denoise audio (optional but recommended for better transcription/cloning)
+        # try:
+        #     print("Denoising audio for better transcription and voice cloning...")
+        #     from denoise_audio import denoise_audio
+        #     denoised_path = "temp/orig_audio_denoised.wav"
+        #     if denoise_audio(orig_audio_path, denoised_path):
+        #         orig_audio_path = denoised_path  # Use denoised audio for rest of pipeline
+        #         orig_audio = AudioSegment.from_file(orig_audio_path, format="wav")  # Reload denoised audio
+        #         print("Using denoised audio for speaker diarization and transcription")
+        #     else:
+        #         print("Warning: Denoising failed, using original audio")
+        # except Exception as e:
+        #     print(f"Warning: Denoising step failed ({e}), continuing with original audio")
+
         # 2. Speaker Diarization
         try:
             if pyannotePkl:
@@ -93,6 +107,7 @@ class YTDubPipeline:
             
             # Extract speaker audio segments
             print("Extracting speaker audio segments...")
+            from denoise_audio import denoise_audio
             unique_speakers = set(turn['speaker'] for turn in turns)
             for speaker in unique_speakers:
                 speaker_audio = AudioSegment.empty()
@@ -101,11 +116,14 @@ class YTDubPipeline:
                         start_ms = int(turn['start'] * 1000)  # Convert seconds to milliseconds
                         end_ms = int(turn['end'] * 1000)
                         speaker_audio += orig_audio[start_ms:end_ms]
-                
                 speaker_file = f"temp/speakers_audio/{speaker}.wav"
                 speaker_audio.export(speaker_file, format="wav")
+                if denoise_audio(speaker_file, speaker_file):
+                    print("Using denoised audio for voice cloning")
+                else:
+                    print("Warning: Denoising failed, using original audio")
                 print(f"Extracted {len(speaker_audio)}ms of audio for {speaker}")
-            
+
             print(f"Extracted audio for {len(unique_speakers)} speakers")
 
         except Exception as e:
@@ -119,7 +137,7 @@ class YTDubPipeline:
                 messages=[
                     {
                         "role": "user",
-                        "content": f"""{before_context} {sentence} {after_context} ONLY output {targ} translation of '{sentence}'."""
+                        "content": f"""{before_context} {sentence} {after_context} ONLY output {targ} translation of '{sentence}'. Do not output any thing else."""
                     }
                 ]
             )
@@ -163,7 +181,7 @@ class YTDubPipeline:
         #4. Text to Speech
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
         MIN_SPEED = .8
-        MAX_SPEED = 2
+        MAX_SPEED = 1.7
         
         os.makedirs("temp/audio_chunks", exist_ok=True)
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
@@ -179,21 +197,22 @@ class YTDubPipeline:
                             speed=1.0) 
             audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
 
-            # speed/slow audio
+           
             adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
-            trans_dur = len(audio)
+
+            translated_dur = len(audio)
             orig_dur = (turn['end'] - turn['start']) * 1000
-            
+
+            # speed/slow audio
             # Handle zero duration case
             if orig_dur <= 0:
                 print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
                 audio.export(adjAudioFile, format="wav")
                 continue
             
-            speed_factor = trans_dur / orig_dur
-            
-            if trans_dur < orig_dur:
-                if speed_factor < MIN_SPEED: #trans_dur significantly shorter than orig_dur
+            if translated_dur < orig_dur:
+                speed_factor = translated_dur / orig_dur
+                if speed_factor < MIN_SPEED: #translated_dur significantly shorter than orig_dur
                     speed_factor = MIN_SPEED
                 
                 # Slow down using frame rate manipulation
@@ -206,19 +225,25 @@ class YTDubPipeline:
                     adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
                 adjAudio.export(adjAudioFile, format="wav")
             else:
-                if speed_factor > MAX_SPEED:
-                    speed_factor = MAX_SPEED
-                adjAudio = audio.speedup(playback_speed=speed_factor)
+                # Start with the original audio
+                adjAudio = audio
+                TRIM_MS = 300
+                trim_amount = min(TRIM_MS, len(adjAudio) // 4)
+                if trim_amount > 0:
+                    adjAudio = adjAudio[trim_amount:-trim_amount]
+                translated_dur = len(adjAudio)
+                if translated_dur > orig_dur:
+                    speed_factor = translated_dur / orig_dur
+                    if speed_factor > MAX_SPEED:
+                        speed_factor = MAX_SPEED
+                    adjAudio = adjAudio.speedup(playback_speed=speed_factor)
                 adjAudio.export(adjAudioFile, format="wav")
 
-            TRIM_MS = 300
-            trim_amount = min(TRIM_MS, len(adjAudio) // 4)
-            if trim_amount > 0:
-                adjAudio = adjAudio[trim_amount:-trim_amount]
+            
             
             print(f"durations for turn {i}:")
             print("orig duration: ", orig_dur)
-            print("translated duration: ", trans_dur)
+            print("translated duration: ", translated_dur)
             print("transformed duration: ", len(adjAudio))
 
         # Stitch chunks together
@@ -237,7 +262,7 @@ class YTDubPipeline:
             else:
                 print(f"Warning: Chunk {i} would overlap previous chunk by {-pad}ms. No silence added.")
             final_audio += adjAudio
-            curPos += (orig_start + len(adjAudio))
+            curPos = orig_start + len(adjAudio)
         
         final_audio.export("temp/final_audio.wav", format="wav")
 
