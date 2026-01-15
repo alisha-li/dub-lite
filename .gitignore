@@ -1,0 +1,15 @@
+scraps.py
+myenv
+temp/
+__pycache__/
+.DS_Store
+.git_backup/
+# Ignore common temp file types
+*.wav
+*.mp4
+*.pkl
+*.json
+video comparisons/
+
+wav2vec2_checkpoints/
+
