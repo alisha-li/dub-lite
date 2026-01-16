@@ -6,8 +6,6 @@
 # 6. 1 overlay with dubbed audio
 # 7.  ffmpeg combine audio with video
 
-# ***REMOVED***
-
  # TODO:
  # fix download to override current orig_video
  # Add your other pipeline steps here
@@ -29,7 +27,6 @@ from collections import defaultdict
 
 import yt_dlp
 from speechbrain.inference.interfaces import foreign_class
-from pyannote.audio import Pipeline as PyannotePipeline
 from pydub import AudioSegment
 from faster_whisper import WhisperModel
 import nltk
@@ -39,57 +36,27 @@ from transformers import MarianTokenizer, MarianMTModel
 from groq import Groq
 from TTS.api import TTS
 from audio_separator.separator import Separator
-from pyannoteai.sdk import Client
 import librosa
 import soundfile as sf
 import numpy as np
 from denoise_audio import denoise_audio
 from utils import download_video_and_extract_audio
+from log import setup_logging
 import logging
-log_path = os.path.join("temp", "pipeline.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_path, mode = 'w'),
-        logging.StreamHandler()
-    ]
-)
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
 
 class YTDubPipeline:
     def __init__(self):
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self, url: str, src: str, targ: str, hf_token: str, speakerRollsPkl: bool, turnsFinalPkl: bool, segmentsPickle: bool, timeSentencePickle: bool, pyannote: bool, gemini_api: str, groq_api: str):
+    def dub(self,src: str, targ: str, hf_token: str, speakerRollsPkl: bool, segmentsPickle: bool, pyannote_key: bool, gemini_api: str, groq_api: str):
         # 1. Download video using yt-dlp  
-        print(f"Starting dubbing pipeline for: {url}")
-        ydl_opts = {
-            'format' : 'best',
-            'outtmpl' : 'temp/orig_video.mp4',
-            'cookiesfrombrowser' : ('chrome',)
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-        
-        orig_audio = AudioSegment.from_file("temp/orig_video.mp4", format="mp4")
-        orig_audio_path = "temp/orig_audio.wav"
-        orig_audio.export(orig_audio_path, format="wav")
-
-        # 1.1 Denoise audio (Produced worse results when I was testing)
-        # try:
-        #     print("Denoising audio for better transcription and voice cloning...")
-        #     from denoise_audio import denoise_audio
-        #     denoised_path = "temp/orig_audio_denoised.wav"
-        #     if denoise_audio(orig_audio_path, denoised_path):
-        #         orig_audio_path = denoised_path  # Use denoised audio for rest of pipeline
-        #         orig_audio = AudioSegment.from_file(orig_audio_path, format="wav")  # Reload denoised audio
-        #         print("Using denoised audio for speaker diarization and transcription")
-        #     else:
-        #         print("Warning: Denoising failed, using original audio")
-        # except Exception as e:
-        #     print(f"Warning: Denoising step failed ({e}), continuing with original audio")
+        print(f"Starting dubbing pipeline for: {src}")
+        video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
 
         # 2. Speaker Diarization and Transcription
         if speakerRollsPkl:
@@ -97,8 +64,9 @@ class YTDubPipeline:
             with open("temp/speaker_rolls.pkl", "rb") as f:
                 speaker_rolls = pickle.load(f)
             logging.info(f"Loaded {len(speaker_rolls)} speaker rolls from file!")
-        elif pyannote: # paid
-            client = Client("***REMOVED***")
+
+        elif pyannote_key: # paid
+            client = Client(pyannote_key)
             orig_audio_url = client.upload(orig_audio_path)
             diarization_job = client.diarize(orig_audio_url, transcription=True)
             diarization = client.retrieve(diarization_job)
@@ -163,7 +131,7 @@ class YTDubPipeline:
                 logging.info(f"Loaded {len(turns)} turns from file!")
             else:
                 # 2.1.1 Orchestration
-                client = Client("***REMOVED***")
+                client = Client(os.getenv('PYANNOTE_API_KEY'))
                 orig_audio_url = client.upload(orig_audio_path)
                 diarization_job = client.diarize(orig_audio_url, transcription=True)
                 diarization = client.retrieve(diarization_job)
@@ -638,5 +606,5 @@ if __name__ == "__main__":
     # args = parser.parse_args()
 
     pipeline = YTDubPipeline()
-    result = pipeline.dub("https://www.youtube.com/watch?v=XXPISZI_big", "en", "zh", os.getenv('HF_TOKEN'), False, False)
+    result = pipeline.dub("https://www.youtube.com/watch?v=XXPISZI_big", "en", "zh", os.getenv('HF_TOKEN'), False, False, pyannote_key=os.getenv('PYANNOTE_API_KEY'))
     print(f"dubbed video path: {result}")
