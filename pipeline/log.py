@@ -9,7 +9,3 @@ def setup_logging():
             logging.StreamHandler()
         ]
     )
-
-# utils.py  
-import logging
-logger = logging.getLogger(__name__)  # Just this!

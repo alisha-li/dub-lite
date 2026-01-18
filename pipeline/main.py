@@ -40,7 +40,7 @@ import librosa
 import soundfile as sf
 import numpy as np
 from denoise_audio import denoise_audio
-from utils import download_video_and_extract_audio
+from utils import download_video_and_extract_audio, diarize_audio, split_speakers_and_denoise, assign_speakers_to_segments, create_sentences
 from log import setup_logging
 import logging
 
@@ -53,267 +53,45 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self,src: str, targ: str, hf_token: str, speakerRollsPkl: bool, segmentsPickle: bool, pyannote_key: bool, gemini_api: str, groq_api: str):
+    def dub(self,src: str, targ: str, hf_token: str, speakerTurnsPkl: bool, segmentsPkl: bool, pyannote_key: bool, gemini_api: str, groq_api: str):
         # 1. Download video using yt-dlp  
         print(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
 
         # 2. Speaker Diarization and Transcription
-        if speakerRollsPkl:
-            logging.info("Loading pyannote pickle...")
-            with open("temp/speaker_rolls.pkl", "rb") as f:
-                speaker_rolls = pickle.load(f)
-            logging.info(f"Loaded {len(speaker_rolls)} speaker rolls from file!")
-
-        elif pyannote_key: # paid
-            client = Client(pyannote_key)
-            orig_audio_url = client.upload(orig_audio_path)
-            diarization_job = client.diarize(orig_audio_url, transcription=True)
-            diarization = client.retrieve(diarization_job)
-
-            turns = diarization['output']['turnLevelTranscription']
-            speaker_rolls = {}
-
-            for turn in turns:
-                start = turn['start']
-                end = turn['end']
-                speaker = turn['speaker']
-                
-                if abs(end - start) > 0.2:
-                    speaker_rolls[(start, end)] = speaker
-                    logging.info(f"Speaker {speaker}: from {start}s to {end}s")
-
-        else:  #free
-            logging.info("Running speaker diarization (this may take several minutes)...")
-            diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
-            diarization = diarizationPipeline(audio_file)
-            speaker_rolls = {}
+        if speakerTurnsPkl:
+            logger.info("Loading pyannote pickle...")
+            with open("temp/speaker_turns.pkl", "rb") as f:
+                speaker_turns = pickle.load(f)
+            logger.info(f"Loaded {len(speaker_turns)} speaker turns from file!")
+        else:
+            speaker_turns, speakers = diarize_audio(orig_audio_path, pyannote_key)
+            with open("temp/speaker_turns.pkl", "wb") as f:
+                pickle.dump(speaker_turns, f)
         
-            for speech_turn, _, speaker in diarization.itertracks(yield_label=True):
-                if abs(speech_turn.end - speech_turn.start) > .2:
-                    print(f"Speaker {speaker}: from {speech_turn.start}s to {speech_turn.end}s")
-                    speaker_rolls[(speech_turn.start, speech_turn.end)] = speaker
+        # Extract speaker audios and denoise (for voice cloning later)
+        split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
+                
+        # 2.2.2 Transcription
+        if segmentsPkl:
+            logger.info("Loading segments pickle...")
+            with open("temp/segments.pkl", "rb") as f:
+                segments = pickle.load(f)
+        else:
+            logger.info("Running Whisper Transcription...")
+            model = WhisperModel("medium", device="cpu", compute_type="int8")
+            segments, info = model.transcribe(orig_audio_path, word_timestamps=True)
+            segments = list(segments) 
+            logger.info(f"Transcription completed! Found {len(segments)} segments")
+            with open("temp/segments.pkl", "wb") as f:
+                pickle.dump(segments, f)
             
-            speakers = set(list(speaker_rolls.values()))  # Get unique speaker IDs
-            logging.info("Diarization completed")
+        segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
 
+        # list of sentence objects (sentence, start, end, speaker) sorted by start
+        sorted_sentences = create_sentences(segments_with_speakers)
         
-
-        with open("temp/speaker_rolls.pkl", "wb") as f:
-            pickle.dump(speaker_rolls, f)
-        # just reorganizing to have pyannote in one section and whisper in another, with pickles at least for pyannote maybe whisper too
-        
-         # Extract speaker audios and denoise (for voice cloning later)
-        logging.info("Extracting speaker audios and denoising...")
-        unique_speakers = set(turn['speaker'] for turn in turns)
-        for speaker in unique_speakers:
-            speaker_audio = AudioSegment.empty()
-            for turn in turns:
-                if turn['speaker'] == speaker:
-                    start_ms = int(turn['start'] * 1000)  # Convert to milliseconds
-                    end_ms = int(turn['end'] * 1000)
-                    speaker_audio += orig_audio[start_ms:end_ms]
-            speaker_file = f"temp/speakers_audio/{speaker}.wav"
-            speaker_audio.export(speaker_file, format="wav")
-            if denoise_audio(speaker_file, speaker_file):
-                logging.info("Using denoised audio for voice cloning")
-            else:
-                logging.info("Warning: Denoising failed, using original audio")
-            logging.info(f"Extracted {len(speaker_audio)}ms of audio for {speaker}")
-        logging.info(f"Extracted audio for {len(unique_speakers)} speakers")
-
-        if pyannote:
-            # 2.1 Paid Pyannote Orchestration (Diarization + Transcription)
-            if pyannotePkl:
-                logging.info("Loading pyannote pickle...")
-                with open("temp/orchestration.pkl", "rb") as f:
-                    turns = pickle.load(f)
-                logging.info(f"Loaded {len(turns)} turns from file!")
-            else:
-                # 2.1.1 Orchestration
-                client = Client(os.getenv('PYANNOTE_API_KEY'))
-                orig_audio_url = client.upload(orig_audio_path)
-                diarization_job = client.diarize(orig_audio_url, transcription=True)
-                diarization = client.retrieve(diarization_job)
-
-                turns = diarization['output']['turnLevelTranscription']
-                speakers_rolls = {}
-
-                for turn in turns:
-                    start = turn['start']
-                    end = turn['end']
-                    speaker = turn['speaker']
-                    
-                    if abs(end - start) > 0.2:
-                        speakers_rolls[(start, end)] = speaker
-                        logging.info(f"Speaker {speaker}: from {start}s to {end}s")
-
-                # just thinking about how to pickle this. . . should it be shared?
-                with open("temp/diarization.pkl", "wb") as f:
-                    pickle.dump(turns, f)
-            
-                # Extract speaker audios and denoise (for voice cloning later)
-                logging.info("Extracting speaker audios and denoising...")
-                unique_speakers = set(turn['speaker'] for turn in turns)
-                for speaker in unique_speakers:
-                    speaker_audio = AudioSegment.empty()
-                    for turn in turns:
-                        if turn['speaker'] == speaker:
-                            start_ms = int(turn['start'] * 1000)  # Convert to milliseconds
-                            end_ms = int(turn['end'] * 1000)
-                            speaker_audio += orig_audio[start_ms:end_ms]
-                    speaker_file = f"temp/speakers_audio/{speaker}.wav"
-                    speaker_audio.export(speaker_file, format="wav")
-                    if denoise_audio(speaker_file, speaker_file):
-                        logging.info("Using denoised audio for voice cloning")
-                    else:
-                        logging.info("Warning: Denoising failed, using original audio")
-                    logging.info(f"Extracted {len(speaker_audio)}ms of audio for {speaker}")
-                logging.info(f"Extracted audio for {len(unique_speakers)} speakers")
-            
-            sentenceDict = defaultdict(list)
-            for turn in turns:
-                #hmm i dont know the start and end times of each word here, only the start and end times of the segments....
-
-        else: 
-            # 2.2 Free Pyannote Diarization
-            segments_file = "temp/segments.pkl"
-            audio_file = "temp/orig_audio.wav"
-            if segmentsPickle:
-                logging.info("Loading segments pickle...")
-                with open(segments_file, "rb") as f:
-                    saved_data = pickle.load(f)
-                segments = saved_data['segments']
-                speakers_rolls = saved_data['speakers_rolls']
-                speakers = saved_data['speakers']
-                logging.info(f"Loaded {len(segments)} segments and {len(speakers)} speakers from file!")
-            else:
-                # 2.2.1 Diarization
-                logging.info("Running speaker diarization (this may take several minutes)...")
-                diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
-                diarization = diarizationPipeline(audio_file)
-                speakers_rolls = {}
-            
-                for speech_turn, _, speaker in diarization.itertracks(yield_label=True):
-                    if abs(speech_turn.end - speech_turn.start) > .2:
-                        print(f"Speaker {speaker}: from {speech_turn.start}s to {speech_turn.end}s")
-                        speakers_rolls[(speech_turn.start, speech_turn.end)] = speaker
-                
-                speakers = set(list(speakers_rolls.values()))  # Get unique speaker IDs
-
-                logging.info("Diarization completed")
-
-
-                
-                audio = AudioSegment.from_file("temp/orig_video.mp4", format="mp4")
-                audio.export(audio_file, format="wav")
-
-                # Extract speaker audios and denoise (for voice cloning later)
-                for speaker in speakers:
-                    speaker_audio = AudioSegment.empty()
-                    for key, value in speakers_rolls.items():
-                        if speaker == value:
-                            start = int(key[0])*1000  # Convert seconds to milliseconds
-                            end = int(key[1])*1000
-                            
-                            speaker_audio += audio[start:end]  # Extract this speaker's audio segments
-                    speaker_audio.export(f"temp/speakers_audio/{speaker}.wav", format="wav")
-                    if denoise_audio(f"temp/speakers_audio/{speaker}.wav", f"temp/speakers_audio/{speaker}.wav"):
-                        logging.info("Using denoised audio for voice cloning")
-                    else:
-                        logging.info("Warning: Denoising failed, using original audio")
-                
-                # 2.2.2 Transcription
-                logging.info("Running Whisper Transcription...")
-                model = WhisperModel("medium", device="cpu", compute_type="int8")
-                segments, info = model.transcribe("temp/orig_audio.wav", word_timestamps=True)
-                segments = list(segments) 
-                logging.info(f"Transcription completed! Found {len(segments)} segments")
-
-                # Save all data to file for future use
-                logging.info("Saving segments and speaker data to file...")
-                data_to_save = {
-                    'segments': segments,
-                    'speakers_rolls': speakers_rolls,
-                    'speakers': speakers
-                }
-                with open(segments_file, "wb") as f:
-                    pickle.dump(data_to_save, f)
-                logging.info(f"All data saved to {segments_file}")
-            
-
-            # Assign speaker to each segment
-            time_stamped = []
-            wordCount = 0
-            newSegments = []
-            for i, segment in enumerate(segments):
-                first_word_idx = wordCount
-                for i, word in enumerate(segment.words):
-                    wordCount += 1
-                    time_stamped.append([word.word, word.start, word.end]) #will be usedlater when determining start and end times for sentences
-                last_word_idx = wordCount - 1
-
-                start = time_stamped[first_word_idx][1]
-                end = time_stamped[last_word_idx][2]
-
-                resSpeaker = None
-                max_overlap = 0
-                for times, speaker in speakers_rolls.items():
-                    speaker_start =  int(times[0])
-                    speaker_end = int(times[1])
-                    if speaker_end < start:
-                        continue
-                    elif speaker_start > end:
-                        break
-                        
-                    overlap_start = max(start, speaker_start)
-                    overlap_end = min(end, speaker_end)
-                    overlap = overlap_end - overlap_start
-                
-                    # Update speaker if this overlap is greater than previous ones
-                    if overlap > max_overlap:
-                        max_overlap = overlap
-                        resSpeaker = speaker
-                     
-                newSegments.append({
-                    'speaker': resSpeaker,
-                    'start': start,
-                    'end': end,
-                    'text': segment.text
-                })
-
-            # combine segments by speaker
-            speakerSegments = defaultdict(list)
-            for segment in newSegments:
-                speakerSegments[segment['speaker']].append(segment)
-
-            sentenceDict = defaultdict(list)            
-            for speaker, segments in speakerSegments.items():
-                fullTextList = []
-                for segment in segments:
-                    for word in segment.words:
-                        fullTextList.append([word.word, word.start, word.end])
-                fullTextStr = " ".join(fullTextList)
-                sentences = sent_tokenize(fullTextStr)
-                
-                word_idx = 0
-                for sentence in sentences:
-                    num_words = len(sentence.split())
-                    sentence_words = fullTextList[word_idx:word_idx+num_words]
-                    sentenceDict[speaker].append({
-                        'speaker': speaker,
-                        'sentence': sentence,
-                        'start': sentence_words[0][1], # first word's start
-                        'end': sentence_words[-1][2] # last word's end
-                    })
-                    word_idx += num_words
-
-        all_sentences = []
-        for speaker, sentences in sentenceDict.items():
-            all_sentences.extend(sentences)  # Add all sentences from this speaker
-
-        # Sort by start time
-        all_sentences_sorted = sorted(all_sentences, key=lambda x: x['start'])
+        # After translation, we need a method to assign translated sentences back to segments
 
         # 3. Translate and extract emotions
         if groq_api:
@@ -428,9 +206,9 @@ class YTDubPipeline:
             
             # Calculate accumulated drift (how far behind schedule we are)
             drift_ms = max(0, curDuration - (turn['start'] * 1000))
-            logging.info(f"curDuration: {curDuration}")
-            logging.info(f"turn start: {turn['start']}")
-            logging.info(f"drift_ms: {drift_ms}")
+            logger.info(f"curDuration: {curDuration}")
+            logger.info(f"turn start: {turn['start']}")
+            logger.info(f"drift_ms: {drift_ms}")
             target_dur = max(orig_dur + usable_prev_silence + usable_next_silence - drift_ms, .01)
             
             if (translated_dur == orig_dur and drift_ms == 0):
@@ -438,7 +216,7 @@ class YTDubPipeline:
                 adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
         
             elif (orig_dur < translated_dur < target_dur):
-                logging.info("orig_dur < translated_dur < target_dur")
+                logger.info("orig_dur < translated_dur < target_dur")
                 range_size = target_dur - orig_dur
                 distance_from_orig = translated_dur - orig_dur
                 ratio = distance_from_orig / range_size
@@ -454,7 +232,7 @@ class YTDubPipeline:
                     adjAudio = AudioSegment.silent(duration=leftover_prevSilence) + adjAudio
 
             elif translated_dur >= target_dur:
-                logging.info("translated_dur >= target_dur")
+                logger.info("translated_dur >= target_dur")
                 # Need to speed up
                 speed_factor = translated_dur / target_dur
                 if speed_factor > MAX_SPEED:
@@ -468,7 +246,7 @@ class YTDubPipeline:
                 # adjAudio = AudioSegment.from_wav(adjAudioFile)
                 
             elif translated_dur < orig_dur:
-                logging.info("translated_dur < orig_dur")
+                logger.info("translated_dur < orig_dur")
                 # Need to slow down 
                 speed_factor = translated_dur / orig_dur
                 if speed_factor < MIN_SPEED: #translated_dur signif shorter than target_dur
@@ -496,23 +274,25 @@ class YTDubPipeline:
                 adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
 
                 if os.path.exists("temp/audio_chunks/{i}_slowed.wav"):
+                    logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
                     os.remove("temp/audio_chunks/{i}_slowed.wav")
 
                 # if os.path.exists(temp_output):
+                #     logger.info(f"Removing {temp_output}")
                 #     os.remove(temp_output)
                 # If still shorter after slowing, pad with silence
                 if len(adjAudio) < orig_dur:
                     adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
                 adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable_next_silence)
 
-            logging.info(f"speed factor: {speed_factor}")
-            logging.info(f"target dur: {target_dur}")
-            logging.info(f"adjusted audio length: {len(adjAudio)}")
-            logging.info(f"adjAudio duration: {len(adjAudio)}")
-            logging.info(f"usable_prev_silence: {usable_prev_silence}")
-            logging.info(f"usable_next_silence: {usable_next_silence}")
-            logging.info(f"next_silence: {next_silence}")
-            logging.info(f"prev_silence: {prev_silence}")
+            logger.info(f"speed factor: {speed_factor}")
+            logger.info(f"target dur: {target_dur}")
+            logger.info(f"adjusted audio length: {len(adjAudio)}")
+            logger.info(f"adjAudio duration: {len(adjAudio)}")
+            logger.info(f"usable_prev_silence: {usable_prev_silence}")
+            logger.info(f"usable_next_silence: {usable_next_silence}")
+            logger.info(f"next_silence: {next_silence}")
+            logger.info(f"prev_silence: {prev_silence}")
         
             if i == 0:
                 adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
@@ -521,23 +301,23 @@ class YTDubPipeline:
             adjAudio.export(adjAudioFile, format="wav")
             curDuration += len(adjAudio)
             
-            logging.info(f"durations for turn {i}:")
-            logging.info(f"orig duration: {orig_dur}")
-            logging.info(f"translated duration: {translated_dur}")
-            logging.info(f"transformed duration: {len(adjAudio)}")
+            logger.info(f"durations for turn {i}:")
+            logger.info(f"orig duration: {orig_dur}")
+            logger.info(f"translated duration: {translated_dur}")
+            logger.info(f"transformed duration: {len(adjAudio)}")
 
 
         # Stitch chunks together
-        logging.info("Stitching chunks together")
+        logger.info("Stitching chunks together")
         final_audio = AudioSegment.empty()
         for i in range(len(turns)):
             adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
             adjAudio = AudioSegment.from_wav(adjAudioFile)
             final_audio += adjAudio
-            logging.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
+            logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
 
         final_audio.export("temp/final_audio.wav", format="wav")
-        logging.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
+        logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
 
         # Stitch chunks together
         # print("Stitching chunks together")
