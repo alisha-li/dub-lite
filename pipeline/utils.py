@@ -16,6 +16,12 @@ from nltk.tokenize import sent_tokenize
 import logging
 logger = logging.getLogger(__name__)
 
+# translate
+from groq import Groq
+
+# classify_emotion
+from speechbrain.inference.interfaces import foreign_class
+
 def download_video_and_extract_audio(
     source, 
     video_path="temp/orig_video.mp4", 
@@ -60,7 +66,7 @@ def download_video_and_extract_audio(
     return video_path, audio_path, orig_audio
 
 
-def diarize_audio(audio_path: str, pyannote_key: str):
+def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
     if pyannote_key: # paid
         client = Client(pyannote_key)
         orig_audio_url = client.upload(audio_path)
@@ -148,6 +154,7 @@ def assign_speakers_to_segments(segments: list, speaker_turns: dict):
                 
         segments_with_speakers.append({
             'text': segment.text,
+            'words': segment.words,
             'speaker': resSpeaker,
             'start': start,
             'end': end
@@ -190,5 +197,98 @@ def create_sentences(segments_with_speakers: list):
         all_sentences.extend(sentences)  # Add all sentences from this speaker
 
     # Sort by start time
-    sentences_sorted = sorted(all_sentences, key=lambda x: x['start'])
-    return sentences_sorted
+    sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
+    return sorted_sentences
+
+def translate(sentence, before_context, after_context, targ, groq_api: str, gemini_api: str):
+    if groq_api:
+        client = Groq(api_key=os.environ.get("GROQ_API_KEY"),)
+        completion = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"""{before_context} {sentence} {after_context} Correct any typos and ONLY output {targ} translation of '{sentence}'. Do not output any thing else."""
+                }
+            ]
+        )
+        translation = completion.choices[0].message.content.strip()
+        return translation
+    elif gemini_api:
+        return "Nothing yet, gemini api not implemented"
+    else:
+        return "Nothing yet, no api key provided"
+
+def classify_emotion(audio_path: str):
+    classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
+    out_prob, score, index, text_lab = classifier.classify_file(audio_path)
+    return text_lab[0]
+
+def assign_sentences_to_segments(sorted_sentences: list, segments: list):
+    i_seg = 0
+    i_seg_word = 0
+    i_sent = 0
+    cur_segment = segments[i_seg]
+        
+    while i_sent < len(sorted_sentences):
+        i_sent_word = 0
+        sentence = sorted_sentences[i_sent]
+        sentence_words = sentence['sentence'].split()
+        sorted_sentences[i_sent]['segments'] = []      
+        while i_sent_word < len(sentence_words):
+            if i_seg_word < len(cur_segment['words']):
+                i_seg_word += 1 
+            else: # 
+                prop = i_sent_word / len(sentence_words)
+                sorted_sentences[i_sent]['segments'].append((i_seg, prop))
+                i_seg += 1
+                i_seg_word = 0
+                cur_segment = segments[i_seg]
+            i_sent_word += 1
+        if i_seg_word > 0:
+            prop = i_sent_word / len(sentence_words)
+            sorted_sentences[i_sent]['segments'].append((i_seg, prop))
+        if len(sorted_sentences[i_sent]['segments']) == 0:
+            sorted_sentences[i_sent]['segments'].append((i_seg, 1))
+        i_sent += 1
+    return sorted_sentences
+
+
+def assign_sentences_to_segments(sorted_sentences: list, segments: list):
+    i_seg = 0
+    i_seg_word = 0
+    i_sent = 0
+    cur_segment = segments[i_seg]
+        
+    while i_sent < len(sorted_sentences):
+        i_sent_word = 0
+        sentence = sorted_sentences[i_sent]
+        sentence_words = sentence['sentence'].split()
+        sorted_sentences[i_sent]['segments'] = []
+        segment_start_word = 0  # for correct proportion later
+        
+        while i_sent_word < len(sentence_words):
+            if i_seg_word < len(cur_segment['words']):
+                i_seg_word += 1
+                i_sent_word += 1
+            else:
+                words_in_segment = i_sent_word - segment_start_word # number of words of curSentence in curSegment
+                prop = words_in_segment / len(sentence_words)
+                sorted_sentences[i_sent]['segments'].append((i_seg, prop))
+                
+                i_seg += 1
+                i_seg_word = 0
+                cur_segment = segments[i_seg]
+                segment_start_word = i_sent_word 
+
+        # if didn't finish a segment, still part of segment
+        words_in_segment = i_sent_word - segment_start_word
+        if words_in_segment > 0:
+            prop = words_in_segment / len(sentence_words)
+            sorted_sentences[i_sent]['segments'].append((i_seg, prop))
+        
+        if len(sorted_sentences[i_sent]['segments']) == 0:
+            sorted_sentences[i_sent]['segments'].append((i_seg, 1))
+        i_sent += 1
+        
+    return sorted_sentences

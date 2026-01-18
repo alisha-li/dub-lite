@@ -23,24 +23,25 @@ import os
 import subprocess
 from dotenv import load_dotenv
 load_dotenv()
-from collections import defaultdict
 
-import yt_dlp
-from speechbrain.inference.interfaces import foreign_class
 from pydub import AudioSegment
 from faster_whisper import WhisperModel
-import nltk
-from nltk.tokenize import sent_tokenize
 import pickle
-from transformers import MarianTokenizer, MarianMTModel
-from groq import Groq
 from TTS.api import TTS
 from audio_separator.separator import Separator
 import librosa
 import soundfile as sf
 import numpy as np
 from denoise_audio import denoise_audio
-from utils import download_video_and_extract_audio, diarize_audio, split_speakers_and_denoise, assign_speakers_to_segments, create_sentences
+import utils
+from utils import (
+    download_video_and_extract_audio,
+    diarize_audio,
+    split_speakers_and_denoise,
+    assign_speakers_to_segments,
+    create_sentences,
+    classify_emotion,
+)
 from log import setup_logging
 import logging
 
@@ -53,7 +54,7 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self,src: str, targ: str, hf_token: str, speakerTurnsPkl: bool, segmentsPkl: bool, pyannote_key: bool, gemini_api: str, groq_api: str):
+    def dub(self,src: str, targ: str, hf_token: str, pyannote_key: bool, gemini_api: str, groq_api: str, speakerTurnsPkl: bool, segmentsPkl: bool, finalSentencesPkl: bool):
         # 1. Download video using yt-dlp  
         print(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
@@ -65,7 +66,7 @@ class YTDubPipeline:
                 speaker_turns = pickle.load(f)
             logger.info(f"Loaded {len(speaker_turns)} speaker turns from file!")
         else:
-            speaker_turns, speakers = diarize_audio(orig_audio_path, pyannote_key)
+            speaker_turns, speakers = diarize_audio(orig_audio_path, pyannote_key, hf_token)
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
         
@@ -94,69 +95,37 @@ class YTDubPipeline:
         # After translation, we need a method to assign translated sentences back to segments
 
         # 3. Translate and extract emotions
-        if groq_api:
-            def translate(sentence, before_context, after_context, target_language):
-                client = Groq(api_key=os.environ.get("GROQ_API_KEY"),)
-                completion = client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": f"""{before_context} {sentence} {after_context} Correct any typos and ONLY output {targ} translation of '{sentence}'. Do not output any thing else."""
-                        }
-                    ]
-                )
-                translation = completion.choices[0].message.content.strip()
-                print(translation)
-                return translation
-        elif gemini_api:
-            ...
+        if finalSentencesPkl:
+            print("Loading existing final sentences from file...")
+            with open("temp/final_sentences.pkl", "rb") as f:
+                sorted_sentences = pickle.load(f)
         else:
-            ...
-        if turnsFinalPkl:
-            print("Loading existing final turns from file...")
-            with open("temp/turnsFinal.pkl", "rb") as f:
-                turns = pickle.load(f)
-        else:
-            classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
-            os.makedirs("temp/emotions_audio", exist_ok=True)
-            for i, sentence_obj in enumerate(all_sentences_sorted):
+            for i, sentence_obj in enumerate(sorted_sentences):
                 sentence = sentence_obj['sentence']
                 
                 if i == 0:
                     before_context = ""
-                    after_context = all_sentences_sorted[i+1]['sentence'] if len(all_sentences_sorted) > 1 else ""
-                elif i == len(all_sentences_sorted) - 1:
-                    before_context = all_sentences_sorted[i-1]['sentence']
+                    after_context = sorted_sentences[i+1]['sentence'] if len(sorted_sentences) > 1 else ""
+                elif i == len(sorted_sentences) - 1:
+                    before_context = sorted_sentences[i-1]['sentence']
                     after_context = ""
                 else:
-                    before_context = all_sentences_sorted[i-1]['sentence']
-                    after_context = all_sentences_sorted[i+1]['sentence']
+                    before_context = sorted_sentences[i-1]['sentence']
+                    after_context = sorted_sentences[i+1]['sentence']
                 
                 # Translate with context
-                translation = translate(sentence, before_context, after_context, targ)
+                translation = utils.translate(sentence, before_context, after_context, targ)
                 sentence_obj['translation'] = translation
-            # for i, turn in enumerate(turns):
-            #     sentence = turn['text']
-            #     start = turn['start']*1000
-            #     end = turn['end']*1000
-
-            #     if i == 0:
-            #         translatedSentence = translate(sentence, "", turns[i+1]['text'], targ)
-            #     elif i == len(turns) - 1:
-            #         translatedSentence = translate(sentence, turns[i-1]['text'], "", targ)
-            #     else:
-            #         translatedSentence = translate(sentence, turns[i-1]['text'], turns[i+1]['text'], targ)
-            #     turn['translation'] = translatedSentence
-    
-            #     orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
-            #     out_prob, score, index, text_lab = classifier.classify_file("temp/emotions_audio/emotions.wav")
-            #     os.remove("temp/emotions_audio/emotions.wav")
+               
+                os.makedirs("temp/emotions_audio", exist_ok=True)
+                start = sentence_obj['start']*1000
+                end = sentence_obj['end']*1000
+                orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
+                sentence_obj['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav")
+                os.remove("temp/emotions_audio/emotions.wav")
                 
-            #     turn['emotion'] = text_lab[0]
-            #     # Save turns to pickle file
-            # with open("temp/turnsFinal.pkl", "wb") as f:
-            #     pickle.dump(turns, f)
+                with open("temp/final_sentences.pkl", "wb") as f:
+                    pickle.dump(sorted_sentences, f)
 
         # 4. Text to Speech and Audio Adjustments
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
@@ -386,5 +355,10 @@ if __name__ == "__main__":
     # args = parser.parse_args()
 
     pipeline = YTDubPipeline()
-    result = pipeline.dub("https://www.youtube.com/watch?v=XXPISZI_big", "en", "zh", os.getenv('HF_TOKEN'), False, False, pyannote_key=os.getenv('PYANNOTE_API_KEY'))
+    result = pipeline.dub(
+        "https://www.youtube.com/watch?v=XXPISZI_big", "en", "zh", 
+        hf_token = os.getenv('HF_TOKEN'), 
+        speakerTurnsPkl = False, 
+        segmentsPkl = False, 
+        pyannote_key=os.getenv('PYANNOTE_API_KEY'))
     print(f"dubbed video path: {result}")
