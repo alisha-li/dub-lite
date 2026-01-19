@@ -6,22 +6,9 @@
 # 6. 1 overlay with dubbed audio
 # 7.  ffmpeg combine audio with video
 
- # TODO:
- # fix download to override current orig_video
- # Add your other pipeline steps here
-            # 2. Speaker Diarization
-            # 3. Speech to text
-            # 4. Translate
-            # 5. Text to speech
-            # 6. Background sound separation
-            # 7. Combine audio with video
-
-
 # test video: https://www.youtube.com/watch?v=jIZkKsf6VYo
 # easier test video: https://www.youtube.com/watch?v=YgxyLrnxCH4
 import os
-from re import A
-import subprocess
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -30,7 +17,6 @@ from faster_whisper import WhisperModel
 import pickle
 from TTS.api import TTS
 from audio_separator.separator import Separator
-from denoise_audio import denoise_audio
 import utils
 from utils import (
     download_video_and_extract_audio,
@@ -42,7 +28,9 @@ from utils import (
     assign_sentences_to_segments,
     adjust_audio,
     map_translated_sentences_to_segments,
-    stitch_chunks
+    stitch_chunks,
+    overlay_audios,
+    combine_audio_with_video,
 )
 from log import setup_logging
 import logging
@@ -158,52 +146,33 @@ class YTDubPipeline:
                             language=targ,
                             emotion=segment['emotion'],
                             speed=1.0) 
-    
-        MIN_SPEED = .8
-        MAX_SPEED = 1.7
-        
+        # 5. Adjust audio (speed/slow, pad/trim)                    
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
-
-        adjust_audio(final_segments, MIN_SPEED, MAX_SPEED, len(orig_audio))
+        adjust_audio(final_segments, MIN_SPEED=0.8, MAX_SPEED=1.7, orig_audio_len=len(orig_audio))
+        
+        # 6. Stich adjusted audio chunks together
         stitch_chunks(final_segments)
 
+        # 7. Overlay dubbed speech, background sounds, and video
+        # 7.1 Separate out background sounds
         separator = Separator()
         separator.load_model(model_filename='2_HP-UVR.pth')
-        background_path = separator.separate(orig_audio_path)[0]
-        print("background path: ", background_path)
-        audio1 = AudioSegment.from_file("temp/final_audio.wav")
-        audio2 = AudioSegment.from_file(background_path)
-        print("audio1 length: ", len(audio1))
-        print("audio2 length: ", len(audio2))
-        if len(audio1) > len(audio2):
-            audio2 = audio2 + AudioSegment.silent(duration=len(audio1) - len(audio2))
-        elif len(audio1) < len(audio2):
-            audio1 = audio1 + AudioSegment.silent(duration=len(audio2) - len(audio1))
-        combined_audio = audio1.overlay(audio2)
-        combined_audio.export("temp/combined_audio.wav", format="wav")
+        background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
+        dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")
+        logger.info(f"dubbed_audio length: {len(dubbed_audio)}")
+        logger.info(f"background_audio length: {len(background_audio)}")
+
+        # 7.2 Overlay dubbed speech and background sounds
+        combined_audio_path = overlay_audios(dubbed_audio, background_audio)
+
+        # 7.3 Combine with Video
+        output_video_path = combine_audio_with_video(combined_audio_path, video_path)
         
-        # Combine new audio with original video
-        command = [
-            'ffmpeg',
-            '-i', 'temp/orig_video.mp4',
-            '-i', 'temp/combined_audio.wav',
-            '-c:v', 'copy',  # Copy video stream without re-encoding (fast)
-            '-map', '0:v:0',  # Use video from first input
-            '-map', '1:a:0',  # Use audio from second input
-            '-shortest',  # End when shortest stream ends
-            '-y',  # Overwrite output file if it exists
-            'temp/output_video.mp4'
-        ]
-        print("Combining audio with video using ffmpeg...")
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"FFmpeg error: {result.stderr}")
-            raise Exception(f"Failed to combine audio with video: {result.stderr}")
-        print("Video with dubbed audio saved to temp/output_video.mp4")
+        return output_video_path
 
-        return 'temp/output_video.mp4'  
-    
-
+# TODO:
+ # 1. Check through functions again to ensure smooths transitions
+ # 2. Maybe hardcode paths up top?
 
 if __name__ == "__main__":
     # import argparse

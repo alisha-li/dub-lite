@@ -26,6 +26,9 @@ from speechbrain.inference.interfaces import foreign_class
 import librosa
 import soundfile as sf
 
+# combine_audio_with_background
+import subprocess
+
 def download_video_and_extract_audio(
     source, 
     video_path="temp/orig_video.mp4", 
@@ -327,7 +330,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
             # Handle zero duration case
             if orig_dur <= 0:
                 print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
-                audio.export("temp/adjAudio_chunks/{i}.wav", format="wav")
+                audio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
                 continue
             
             # Calculate accumulated drift (how far behind schedule we are)
@@ -411,7 +414,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                 adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
             elif i == len(segments) - 1:
                 adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-            adjAudio.export("temp/adjAudio_chunks/{i}.wav", format="wav")
+            adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
             curDuration += len(adjAudio)
             
             logger.info(f"durations for segment {i}:")
@@ -419,7 +422,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
             logger.info(f"translated duration: {translated_dur}")
             logger.info(f"transformed duration: {len(adjAudio)}")
 
-# fix
+
 def stitch_chunks(segments):
     logger.info("Stitching chunks together")
     final_audio = AudioSegment.empty()
@@ -428,9 +431,38 @@ def stitch_chunks(segments):
         final_audio += adjAudio
         logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
 
-    final_audio.export("temp/final_audio.wav", format="wav")
+    final_audio.export(f"temp/final_audio.wav", format="wav")
     logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
 
+def overlay_audios(audio1, audio2):
+    if len(audio1) > len(audio2):
+        audio2 = audio2 + AudioSegment.silent(duration=len(audio1) - len(audio2))
+    elif len(audio1) < len(audio2):
+        audio1 = audio1 + AudioSegment.silent(duration=len(audio2) - len(audio1))
+    combined_audio = audio1.overlay(audio2)
+    combined_audio.export("temp/combined_audio.wav", format="wav")
+    return "temp/combined_audio.wav"
+
+def combine_audio_with_video(audio_path:str, video_path:str):
+    # Combine new audio with original video
+    command = [
+        'ffmpeg',
+        '-i', video_path,
+        '-i', audio_path,
+        '-c:v', 'copy',  # Copy video stream without re-encoding (fast)
+        '-map', '0:v:0',  # Use video from first input
+        '-map', '1:a:0',  # Use audio from second input
+        '-shortest',  # End when shortest stream ends
+        '-y',  # Overwrite output file if it exists
+        'temp/output_video.mp4'
+    ]
+    logger.info("Combining audio with video using ffmpeg...")
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"FFmpeg error: {result.stderr}")
+        raise Exception(f"Failed to combine audio with video: {result.stderr}")
+    logger.info("Video with dubbed audio saved to temp/output_video.mp4")
+    return "temp/output_video.mp4"
 
 
 ############################################################
