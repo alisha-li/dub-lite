@@ -278,6 +278,37 @@ def assign_sentences_to_segments(sorted_sentences: list, segments: list):
         final_sentences.extend(speaker_sentences)
     return sorted(final_sentences, key=lambda x: x['start'])
 
+
+def map_translated_sentences_to_segments(sorted_sentences: list, segments: list):
+    """
+    Maps translated sentences to segments based on word proportion.
+    Returns: segments with translated text
+    """
+    for i, segment in enumerate(segments):
+        segment['translation'] = []
+
+    for i, sentence_obj in enumerate(sorted_sentences):
+        words = sentence_obj['translation'].split()
+        total_words = len(sentence_obj['translation'].split())
+        word_idx = 0
+
+        for j, (i_seg_global, prop) in enumerate(sentence_obj['segments']):
+            if j == len(sentence_obj['segments'])-1:
+                num_words = total_words - word_idx # last segment gets remaining words of sentence
+            else:
+                num_words = round(total_words*prop)
+            segment_words = words[word_idx:word_idx + num_words]
+            segments[i_seg_global]['translation'].append(" ".join(segment_words))
+            word_idx += num_words
+        
+        # will delete in cleanup
+        if not sentence_obj['segments']:
+            logger.warning(f"Sentence {i} has no segments: {sentence_obj['sentence']}")
+
+    for segment in segments:
+        segment['translation'] = " ".join(segment['translation'])
+    return segments
+
 def adjust_audio(audio, sorted_sentences, MIN_SPEED, MAX_SPEED, output_path, orig_audio_len):
     """
     Adjusts translated segment audio to fit in roughly the same time slot of original segment

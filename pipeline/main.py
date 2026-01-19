@@ -40,7 +40,8 @@ from utils import (
     create_sentences,
     classify_emotion,
     assign_sentences_to_segments,
-    adjust_audio
+    adjust_audio,
+    map_translated_sentences_to_segments
 )
 from log import setup_logging
 import logging
@@ -129,7 +130,21 @@ class YTDubPipeline:
                     pickle.dump(sorted_sentences, f)
         
 
-        # need to create final segments first
+        # Map translated sentences to segments
+        final_segments = map_translated_sentences_to_segments(sorted_sentences, segments_with_speakers)
+        
+        # At this point, segments looks like:
+        # [
+        #     {
+        #         'text': 'Hello, how',
+        #         'words': ['Hello', 'how'],
+        #         'speaker': 01,
+        #         'start': 0,
+        #         'end': 1000,
+        #         'translation': '你好，你',
+        #         'emotion': 'happy'
+        #     },
+        # ]
 
         # 4. Text to Speech
         os.makedirs("temp/audio_chunks", exist_ok=True)
