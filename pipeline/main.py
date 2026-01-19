@@ -41,7 +41,8 @@ from utils import (
     classify_emotion,
     assign_sentences_to_segments,
     adjust_audio,
-    map_translated_sentences_to_segments
+    map_translated_sentences_to_segments,
+    stitch_chunks
 )
 from log import setup_logging
 import logging
@@ -149,13 +150,13 @@ class YTDubPipeline:
         # 4. Text to Speech
         os.makedirs("temp/audio_chunks", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
-        for i, sentence_obj in enumerate(sorted_sentences): # this should be by segment, not sentence
+        for i, segment in enumerate(final_segments): # this should be by segment, not sentence
             print(f"TTS-ing segment {i}")
-            tts.tts_to_file(text=sentence_obj['translation'],
+            tts.tts_to_file(text=segment['translation'],
                             file_path=f"temp/audio_chunks/{i}.wav",
-                            speaker_wav=f"temp/speakers_audio/{sentence_obj['speaker']}.wav",
+                            speaker_wav=f"temp/speakers_audio/{segment['speaker']}.wav",
                             language=targ,
-                            emotion=sentence_obj['emotion'],
+                            emotion=segment['emotion'],
                             speed=1.0) 
     
         MIN_SPEED = .8
@@ -163,20 +164,8 @@ class YTDubPipeline:
         
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
 
-        adjust_audio(sorted_sentences, MIN_SPEED, MAX_SPEED, "temp/final_audio.wav", len(orig_audio))
-
-        # Stitch chunks together
-        logger.info("Stitching chunks together")
-        final_audio = AudioSegment.empty()
-        for i in range(len(sorted_sentences)):
-            adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
-            adjAudio = AudioSegment.from_wav(adjAudioFile)
-            final_audio += adjAudio
-            logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
-
-        final_audio.export("temp/final_audio.wav", format="wav")
-        logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
-
+        adjust_audio(final_segments, MIN_SPEED, MAX_SPEED, len(orig_audio))
+        stitch_chunks(final_segments)
 
         separator = Separator()
         separator.load_model(model_filename='2_HP-UVR.pth')

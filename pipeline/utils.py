@@ -309,30 +309,31 @@ def map_translated_sentences_to_segments(sorted_sentences: list, segments: list)
         segment['translation'] = " ".join(segment['translation'])
     return segments
 
-def adjust_audio(audio, sorted_sentences, MIN_SPEED, MAX_SPEED, output_path, orig_audio_len):
+
+def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
     """
     Adjusts translated segment audio to fit in roughly the same time slot of original segment
     Returns: adjAudio
     """
     curDuration = 0
-    for i, sentence_obj in enumerate(sorted_sentences):
+    for i, segment in enumerate(segments):
             print(f"Audio adjusting segment {i}")            
             audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
-            prev_silence, next_silence, usable_prev_silence, usable_next_silence = calculate_silences(sentence_obj, i, sorted_sentences, orig_audio_len)
+            prev_silence, next_silence, usable_prev_silence, usable_next_silence = calculate_silences(segment, i, segments, orig_audio_len)
 
             translated_dur = len(audio)
-            orig_dur = (sentence_obj['end'] - sentence_obj['start']) * 1000
+            orig_dur = (segment['end'] - segment['start']) * 1000
 
             # Handle zero duration case
             if orig_dur <= 0:
                 print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
-                audio.export(output_path, format="wav")
+                audio.export("temp/adjAudio_chunks/{i}.wav", format="wav")
                 continue
             
             # Calculate accumulated drift (how far behind schedule we are)
-            drift_ms = max(0, curDuration - (sentence_obj['start'] * 1000))
+            drift_ms = max(0, curDuration - (segment['start'] * 1000))
             logger.info(f"curDuration: {curDuration}")
-            logger.info(f"sentence_obj start: {sentence_obj['start']}")
+            logger.info(f"segment start: {segment['start']}")
             logger.info(f"drift_ms: {drift_ms}")
             target_dur = max(orig_dur + usable_prev_silence + usable_next_silence - drift_ms, .01)
             
@@ -408,29 +409,27 @@ def adjust_audio(audio, sorted_sentences, MIN_SPEED, MAX_SPEED, output_path, ori
         
             if i == 0:
                 adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
-            elif i == len(sorted_sentences) - 1:
+            elif i == len(segments) - 1:
                 adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-            adjAudio.export(output_path, format="wav")
+            adjAudio.export("temp/adjAudio_chunks/{i}.wav", format="wav")
             curDuration += len(adjAudio)
             
-            logger.info(f"durations for sentence_obj {i}:")
+            logger.info(f"durations for segment {i}:")
             logger.info(f"orig duration: {orig_dur}")
             logger.info(f"translated duration: {translated_dur}")
             logger.info(f"transformed duration: {len(adjAudio)}")
 
-#fix
-def stitch_chunks():
+# fix
+def stitch_chunks(segments):
     logger.info("Stitching chunks together")
     final_audio = AudioSegment.empty()
-    for i in range(len(sorted_sentences)):
-        adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
-        adjAudio = AudioSegment.from_wav(adjAudioFile)
+    for i in range(len(segments)):
+        adjAudio = AudioSegment.from_wav(f"temp/adjAudio_chunks/{i}.wav")
         final_audio += adjAudio
         logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
 
     final_audio.export("temp/final_audio.wav", format="wav")
     logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
-
 
 
 
