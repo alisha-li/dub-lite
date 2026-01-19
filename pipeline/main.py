@@ -30,9 +30,6 @@ from faster_whisper import WhisperModel
 import pickle
 from TTS.api import TTS
 from audio_separator.separator import Separator
-import librosa
-import soundfile as sf
-import numpy as np
 from denoise_audio import denoise_audio
 import utils
 from utils import (
@@ -43,6 +40,7 @@ from utils import (
     create_sentences,
     classify_emotion,
     assign_sentences_to_segments,
+    adjust_audio
 )
 from log import setup_logging
 import logging
@@ -129,172 +127,33 @@ class YTDubPipeline:
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
                     pickle.dump(sorted_sentences, f)
-                    
-        # now go through all the segments and add prop of each sentence to each segment
-        translated_segments = segments_with_speakers
-        i_sent = 0
-        for segment in translated_segments:
-            while i < len(sorted_sentences):
-
         
-                
-        # speaker a sentence 1, speaker b sentence 2, speaker a sentence 1 <-- counter example to assign_sentences_to_segments
-        # maybe try splitting by speaker first?
 
-        
-        # 4. Text to Speech and Audio Adjustments
+        # need to create final segments first
+
+        # 4. Text to Speech
+        os.makedirs("temp/audio_chunks", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
-        print("TTS model initialized!")
+        for i, sentence_obj in enumerate(sorted_sentences): # this should be by segment, not sentence
+            print(f"TTS-ing segment {i}")
+            tts.tts_to_file(text=sentence_obj['translation'],
+                            file_path=f"temp/audio_chunks/{i}.wav",
+                            speaker_wav=f"temp/speakers_audio/{sentence_obj['speaker']}.wav",
+                            language=targ,
+                            emotion=sentence_obj['emotion'],
+                            speed=1.0) 
+    
         MIN_SPEED = .8
         MAX_SPEED = 1.7
         
-        os.makedirs("temp/audio_chunks", exist_ok=True)
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
 
-        curDuration = 0
-
-        # TTS, speed/slow audio, and add silences
-        for i, turn in enumerate(turns):
-            # TTS
-            print(f"working on turn: {i}")
-            tts.tts_to_file(text=turn['translation'],
-                            file_path=f"temp/audio_chunks/{i}.wav",
-                            speaker_wav=f"temp/speakers_audio/{turn['speaker']}.wav",
-                            language=targ,
-                            emotion=turn['emotion'],
-                            speed=1.0) 
-            audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
-            if i == 0:
-                prev_silence = turn['start']*1000
-                next_silence = (turns[i+1]['start']*1000) - (turn['end']*1000)
-            elif i == len(turns) - 1:
-                prev_silence = (turn['start']*1000) - (turns[i-1]['end']*1000)
-                next_silence = len(orig_audio) - turn['end']*1000
-            else:
-                prev_silence = (turn['start']*1000) - (turns[i-1]['end']*1000)
-                next_silence = (turns[i+1]['start']*1000) - (turn['end']*1000)
-
-            usable_prev_silence = min(300, max(prev_silence, 0)) # don't start > 300ms before orig start
-            usable_next_silence = max(next_silence - 300, 0) # allocate 300ms for audio after
-            
-            translated_dur = len(audio)
-            orig_dur = (turn['end'] - turn['start']) * 1000
-            adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
-
-            # 4.1. speed/slow audio
-            # Handle zero duration case
-            if orig_dur <= 0:
-                print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
-                audio.export(adjAudioFile, format="wav")
-                continue
-            
-            # Calculate accumulated drift (how far behind schedule we are)
-            drift_ms = max(0, curDuration - (turn['start'] * 1000))
-            logger.info(f"curDuration: {curDuration}")
-            logger.info(f"turn start: {turn['start']}")
-            logger.info(f"drift_ms: {drift_ms}")
-            target_dur = max(orig_dur + usable_prev_silence + usable_next_silence - drift_ms, .01)
-            
-            if (translated_dur == orig_dur and drift_ms == 0):
-                # Exact match and on schedule - just copy
-                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
-        
-            elif (orig_dur < translated_dur < target_dur):
-                logger.info("orig_dur < translated_dur < target_dur")
-                range_size = target_dur - orig_dur
-                distance_from_orig = translated_dur - orig_dur
-                ratio = distance_from_orig / range_size
-                speed_factor = 1.0 + (ratio * (MAX_SPEED - 1.0))
-                adjAudio = audio.speedup(playback_speed=speed_factor)
-                
-                current_total = usable_prev_silence + len(adjAudio)
-                usableNextSilence_needed = target_dur - current_total
-                if usableNextSilence_needed >= 0:
-                    adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usableNextSilence_needed)
-                else:
-                    leftover_prevSilence = usable_prev_silence + usableNextSilence_needed
-                    adjAudio = AudioSegment.silent(duration=leftover_prevSilence) + adjAudio
-
-            elif translated_dur >= target_dur:
-                logger.info("translated_dur >= target_dur")
-                # Need to speed up
-                speed_factor = translated_dur / target_dur
-                if speed_factor > MAX_SPEED:
-                    speed_factor = MAX_SPEED
-                adjAudio = audio.speedup(playback_speed=speed_factor)
-                # command = f"ffmpeg -i temp/audio_chunks/{i}.wav -filter:a 'atempo={speed_factor}' -vn {adjAudioFile}"
-                # process = subprocess.run(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)    
-                # if process.returncode != 0:
-                #     print(f"FFmpeg error: {process.stderr}")
-                #     raise Exception(f"Failed to speed up audio: {process.stderr}")
-                # adjAudio = AudioSegment.from_wav(adjAudioFile)
-                
-            elif translated_dur < orig_dur:
-                logger.info("translated_dur < orig_dur")
-                # Need to slow down 
-                speed_factor = translated_dur / orig_dur
-                if speed_factor < MIN_SPEED: #translated_dur signif shorter than target_dur
-                    speed_factor = MIN_SPEED
-                
-                # Slow down using frame rate manipulation
-                # new_frame_rate = int(audio.frame_rate * speed_factor)
-                # adjAudio = audio._spawn(audio.raw_data, overrides={"frame_rate": new_frame_rate})
-                # adjAudio = adjAudio.set_frame_rate(audio.frame_rate)
-
-                # 1. Load the audio file
-                # y: audio time series, sr: sampling rate
-                y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None) # sr=None preserves original sample rate
-
-                # 2. Define the stretch factor for slowing down
-                # rate < 1.0 slows down; rate > 1.0 speeds up
-                slow_rate = speed_factor # Slows down by 25%
-                # slow_rate = 0.5 # Halves the speed
-
-                # 3. Apply time stretching
-                y_slow = librosa.effects.time_stretch(y, rate=slow_rate)
-
-                # 4. Save the slowed-down audio
-                sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr) # {Link: soundfile.write https://pypi.org/project/soundfile/}
-                adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
-
-                if os.path.exists("temp/audio_chunks/{i}_slowed.wav"):
-                    logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
-                    os.remove("temp/audio_chunks/{i}_slowed.wav")
-
-                # if os.path.exists(temp_output):
-                #     logger.info(f"Removing {temp_output}")
-                #     os.remove(temp_output)
-                # If still shorter after slowing, pad with silence
-                if len(adjAudio) < orig_dur:
-                    adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
-                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable_next_silence)
-
-            logger.info(f"speed factor: {speed_factor}")
-            logger.info(f"target dur: {target_dur}")
-            logger.info(f"adjusted audio length: {len(adjAudio)}")
-            logger.info(f"adjAudio duration: {len(adjAudio)}")
-            logger.info(f"usable_prev_silence: {usable_prev_silence}")
-            logger.info(f"usable_next_silence: {usable_next_silence}")
-            logger.info(f"next_silence: {next_silence}")
-            logger.info(f"prev_silence: {prev_silence}")
-        
-            if i == 0:
-                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
-            elif i == len(turns) - 1:
-                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-            adjAudio.export(adjAudioFile, format="wav")
-            curDuration += len(adjAudio)
-            
-            logger.info(f"durations for turn {i}:")
-            logger.info(f"orig duration: {orig_dur}")
-            logger.info(f"translated duration: {translated_dur}")
-            logger.info(f"transformed duration: {len(adjAudio)}")
-
+        adjust_audio(sorted_sentences, MIN_SPEED, MAX_SPEED, "temp/final_audio.wav", len(orig_audio))
 
         # Stitch chunks together
         logger.info("Stitching chunks together")
         final_audio = AudioSegment.empty()
-        for i in range(len(turns)):
+        for i in range(len(sorted_sentences)):
             adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
             adjAudio = AudioSegment.from_wav(adjAudioFile)
             final_audio += adjAudio
@@ -303,28 +162,8 @@ class YTDubPipeline:
         final_audio.export("temp/final_audio.wav", format="wav")
         logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
 
-        # Stitch chunks together
-        # print("Stitching chunks together")
-        # final_audio = AudioSegment.empty()
-        # curPos = 0
-        # for i, turn in enumerate(turns):
-        #     adjAudioFile = f"temp/adjAudio_chunks/{i}.wav" 
-        #     adjAudio = AudioSegment.from_wav(adjAudioFile)
-        #     orig_start = turn['start'] * 1000
-        #     pad = orig_start - curPos
-        #     if pad > 0:
-        #         final_audio += AudioSegment.silent(duration=pad)
-        #         print(f"padding: {pad}ms")
-        #     else:
-        #         print(f"Warning: Chunk {i} would overlap previous chunk by {-pad}ms. No silence added.")
-        #     final_audio += adjAudio
-        #     curPos = orig_start + len(adjAudio)
-        
-        # final_audio.export("temp/final_audio.wav", format="wav")
 
         separator = Separator()
-
-        # Load a model
         separator.load_model(model_filename='2_HP-UVR.pth')
         background_path = separator.separate(orig_audio_path)[0]
         print("background path: ", background_path)

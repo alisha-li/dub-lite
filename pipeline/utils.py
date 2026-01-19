@@ -22,6 +22,10 @@ from groq import Groq
 # classify_emotion
 from speechbrain.inference.interfaces import foreign_class
 
+# adjust_audio
+import librosa
+import soundfile as sf
+
 def download_video_and_extract_audio(
     source, 
     video_path="temp/orig_video.mp4", 
@@ -162,10 +166,10 @@ def assign_speakers_to_segments(segments: list, speaker_turns: dict):
     return segments_with_speakers
 
 def create_sentences(segments_with_speakers: list):
-    '''
+    """
     Creates a list of sentence objects (sentence, start, end, speaker) 
     from segments with speakers, sorted by start
-    '''
+    """
     # Group segments by speaker before sentence tokenization
     speakers_with_segments = get_speakers_with_segments(segments_with_speakers)
 
@@ -223,10 +227,10 @@ def classify_emotion(audio_path: str):
     return text_lab[0]
 
 def assign_sentences_to_segments(sorted_sentences: list, segments: list):
-    '''
+    """
     Adds segments property with list of segments to each sentence. 
     'segments' --> (segment_index, proportion_of_sentence_in_segment)
-    '''
+    """
 
     speakers_with_segments = get_speakers_with_segments(segments)
     final_sentences = []
@@ -274,10 +278,170 @@ def assign_sentences_to_segments(sorted_sentences: list, segments: list):
         final_sentences.extend(speaker_sentences)
     return sorted(final_sentences, key=lambda x: x['start'])
 
+def adjust_audio(audio, sorted_sentences, MIN_SPEED, MAX_SPEED, output_path, orig_audio_len):
+    """
+    Adjusts translated segment audio to fit in roughly the same time slot of original segment
+    Returns: adjAudio
+    """
+    curDuration = 0
+    for i, sentence_obj in enumerate(sorted_sentences):
+            print(f"Audio adjusting segment {i}")            
+            audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
+            prev_silence, next_silence, usable_prev_silence, usable_next_silence = calculate_silences(sentence_obj, i, sorted_sentences, orig_audio_len)
 
-#### Helper Functions ####
+            translated_dur = len(audio)
+            orig_dur = (sentence_obj['end'] - sentence_obj['start']) * 1000
+
+            # Handle zero duration case
+            if orig_dur <= 0:
+                print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
+                audio.export(output_path, format="wav")
+                continue
+            
+            # Calculate accumulated drift (how far behind schedule we are)
+            drift_ms = max(0, curDuration - (sentence_obj['start'] * 1000))
+            logger.info(f"curDuration: {curDuration}")
+            logger.info(f"sentence_obj start: {sentence_obj['start']}")
+            logger.info(f"drift_ms: {drift_ms}")
+            target_dur = max(orig_dur + usable_prev_silence + usable_next_silence - drift_ms, .01)
+            
+            if (translated_dur == orig_dur and drift_ms == 0):
+                # Exact match and on schedule - just copy
+                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
+        
+            elif (orig_dur < translated_dur < target_dur):
+                logger.info("orig_dur < translated_dur < target_dur")
+                range_size = target_dur - orig_dur
+                distance_from_orig = translated_dur - orig_dur
+                ratio = distance_from_orig / range_size
+                speed_factor = 1.0 + (ratio * (MAX_SPEED - 1.0))
+                adjAudio = audio.speedup(playback_speed=speed_factor)
+                
+                current_total = usable_prev_silence + len(adjAudio)
+                usableNextSilence_needed = target_dur - current_total
+                if usableNextSilence_needed >= 0:
+                    adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usableNextSilence_needed)
+                else:
+                    leftover_prevSilence = usable_prev_silence + usableNextSilence_needed
+                    adjAudio = AudioSegment.silent(duration=leftover_prevSilence) + adjAudio
+
+            elif translated_dur >= target_dur:
+                logger.info("translated_dur >= target_dur")
+                # Need to speed up
+                speed_factor = translated_dur / target_dur
+                if speed_factor > MAX_SPEED:
+                    speed_factor = MAX_SPEED
+                adjAudio = audio.speedup(playback_speed=speed_factor)
+                
+            elif translated_dur < orig_dur:
+                logger.info("translated_dur < orig_dur")
+                # Need to slow down 
+                speed_factor = translated_dur / orig_dur
+                if speed_factor < MIN_SPEED: #translated_dur signif shorter than target_dur
+                    speed_factor = MIN_SPEED
+                
+                # 1. Load the audio file
+                # y: audio time series, sr: sampling rate
+                y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None) # sr=None preserves original sample rate
+
+                # 2. Define the stretch factor for slowing down
+                # rate < 1.0 slows down; rate > 1.0 speeds up
+                slow_rate = speed_factor # Slows down by 25%
+                # slow_rate = 0.5 # Halves the speed
+
+                # 3. Apply time stretching
+                y_slow = librosa.effects.time_stretch(y, rate=slow_rate)
+
+                # 4. Save the slowed-down audio
+                sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr) # {Link: soundfile.write https://pypi.org/project/soundfile/}
+                adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
+
+                if os.path.exists("temp/audio_chunks/{i}_slowed.wav"):
+                    logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
+                    os.remove("temp/audio_chunks/{i}_slowed.wav")
+
+
+                # If still shorter after slowing, pad with silence
+                if len(adjAudio) < orig_dur:
+                    adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
+                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable_next_silence)
+
+            logger.info(f"speed factor: {speed_factor}")
+            logger.info(f"target dur: {target_dur}")
+            logger.info(f"adjusted audio length: {len(adjAudio)}")
+            logger.info(f"adjAudio duration: {len(adjAudio)}")
+            logger.info(f"usable_prev_silence: {usable_prev_silence}")
+            logger.info(f"usable_next_silence: {usable_next_silence}")
+            logger.info(f"next_silence: {next_silence}")
+            logger.info(f"prev_silence: {prev_silence}")
+        
+            if i == 0:
+                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
+            elif i == len(sorted_sentences) - 1:
+                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
+            adjAudio.export(output_path, format="wav")
+            curDuration += len(adjAudio)
+            
+            logger.info(f"durations for sentence_obj {i}:")
+            logger.info(f"orig duration: {orig_dur}")
+            logger.info(f"translated duration: {translated_dur}")
+            logger.info(f"transformed duration: {len(adjAudio)}")
+
+#fix
+def stitch_chunks():
+    logger.info("Stitching chunks together")
+    final_audio = AudioSegment.empty()
+    for i in range(len(sorted_sentences)):
+        adjAudioFile = f"temp/adjAudio_chunks/{i}.wav"
+        adjAudio = AudioSegment.from_wav(adjAudioFile)
+        final_audio += adjAudio
+        logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
+
+    final_audio.export("temp/final_audio.wav", format="wav")
+    logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
+
+
+
+
+############################################################
+#                      Helper Functions                    #
+############################################################
 def get_speakers_with_segments(segments_with_speakers: list):
     speakers_with_segments = defaultdict(list)
     for i, segment in enumerate(segments_with_speakers):
         speakers_with_segments[segment['speaker']].append((i, segment))
     return speakers_with_segments
+
+def calculate_silences(sentence_obj, idx, sentences, orig_audio_len):
+    """
+    Calculate available silence before/after a sentence.
+    Returns: prev_silence, next_silence, usable_prev_silence, usable_next_silence
+    """
+    if idx == 0:
+        prev_silence = sentence_obj['start'] * 1000
+        next_silence = (sentences[idx+1]['start'] * 1000) - (sentence_obj['end'] * 1000)
+    elif idx == len(sentences) - 1:
+        prev_silence = (sentence_obj['start'] * 1000) - (sentences[idx-1]['end'] * 1000)
+        next_silence = orig_audio_len - sentence_obj['end'] * 1000
+    else:
+        prev_silence = (sentence_obj['start'] * 1000) - (sentences[idx-1]['end'] * 1000)
+        next_silence = (sentences[idx+1]['start'] * 1000) - (sentence_obj['end'] * 1000)
+
+    usable_prev_silence = min(300, max(prev_silence, 0)) # don't start > 300ms before orig start
+    usable_next_silence = max(next_silence - 300, 0) # allocate 300ms for audio after
+
+    return prev_silence, next_silence, usable_prev_silence, usable_next_silence
+
+    # putting old code here in case things go wrong
+    # if i == 0:
+    #             prev_silence = sentence_obj['start']*1000
+    #             next_silence = (sorted_sentences[i+1]['start']*1000) - (sentence_obj['end']*1000)
+    #         elif i == len(sorted_sentences) - 1:
+    #             prev_silence = (sentence_obj['start']*1000) - (sorted_sentences[i-1]['end']*1000)
+    #             next_silence = len(orig_audio) - sentence_obj['end']*1000
+    #         else:
+    #             prev_silence = (sentence_obj['start']*1000) - (sorted_sentences[i-1]['end']*1000)
+    #             next_silence = (sorted_sentences[i+1]['start']*1000) - (sentence_obj['end']*1000)
+
+    #         usable_prev_silence = min(300, max(prev_silence, 0)) # don't start > 300ms before orig start
+    #         usable_next_silence = max(next_silence - 300, 0) # allocate 300ms for audio after
