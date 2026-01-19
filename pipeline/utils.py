@@ -167,9 +167,7 @@ def create_sentences(segments_with_speakers: list):
     from segments with speakers, sorted by start
     '''
     # Group segments by speaker before sentence tokenization
-    speakers_with_segments = defaultdict(list)
-    for segment in segments_with_speakers:
-        speakers_with_segments[segment['speaker']].append(segment)
+    speakers_with_segments = get_speakers_with_segments(segments_with_speakers)
 
     speakers_with_sentences = defaultdict(list)            
     for speaker, segments in speakers_with_segments.items():
@@ -225,70 +223,61 @@ def classify_emotion(audio_path: str):
     return text_lab[0]
 
 def assign_sentences_to_segments(sorted_sentences: list, segments: list):
-    i_seg = 0
-    i_seg_word = 0
-    i_sent = 0
-    cur_segment = segments[i_seg]
-        
-    while i_sent < len(sorted_sentences):
-        i_sent_word = 0
-        sentence = sorted_sentences[i_sent]
-        sentence_words = sentence['sentence'].split()
-        sorted_sentences[i_sent]['segments'] = []      
-        while i_sent_word < len(sentence_words):
-            if i_seg_word < len(cur_segment['words']):
-                i_seg_word += 1 
-            else: # 
-                prop = i_sent_word / len(sentence_words)
-                sorted_sentences[i_sent]['segments'].append((i_seg, prop))
-                i_seg += 1
-                i_seg_word = 0
-                cur_segment = segments[i_seg]
-            i_sent_word += 1
-        if i_seg_word > 0:
-            prop = i_sent_word / len(sentence_words)
-            sorted_sentences[i_sent]['segments'].append((i_seg, prop))
-        if len(sorted_sentences[i_sent]['segments']) == 0:
-            sorted_sentences[i_sent]['segments'].append((i_seg, 1))
-        i_sent += 1
-    return sorted_sentences
+    '''
+    Adds segments property with list of segments to each sentence. 
+    'segments' --> (segment_index, proportion_of_sentence_in_segment)
+    '''
 
+    speakers_with_segments = get_speakers_with_segments(segments)
+    final_sentences = []
+    for speaker, speaker_segments in speakers_with_segments.items():
+        speaker_sentences = [sentence for sentence in sorted_sentences if sentence['speaker'] == speaker]
 
-def assign_sentences_to_segments(sorted_sentences: list, segments: list):
-    i_seg = 0
-    i_seg_word = 0
-    i_sent = 0
-    cur_segment = segments[i_seg]
-        
-    while i_sent < len(sorted_sentences):
-        i_sent_word = 0
-        sentence = sorted_sentences[i_sent]
-        sentence_words = sentence['sentence'].split()
-        sorted_sentences[i_sent]['segments'] = []
-        segment_start_word = 0  # for correct proportion later
-        
-        while i_sent_word < len(sentence_words):
-            if i_seg_word < len(cur_segment['words']):
-                i_seg_word += 1
-                i_sent_word += 1
-            else:
-                words_in_segment = i_sent_word - segment_start_word # number of words of curSentence in curSegment
+        # within speaker indices
+        i_seg = 0
+        i_seg_word = 0
+        i_sent = 0
+        # index of segment among all segments (across all speakers)
+        i_seg_global, cur_segment = speaker_segments[i_seg]
+            
+        while i_sent < len(speaker_sentences):
+            i_sent_word = 0
+            sentence = speaker_sentences[i_sent]
+            sentence_words = sentence['sentence'].split()
+            speaker_sentences[i_sent]['segments'] = []
+            segment_start_word = 0  # for correct proportion later
+            
+            while i_sent_word < len(sentence_words):
+                if i_seg_word < len(cur_segment['words']):
+                    i_seg_word += 1
+                    i_sent_word += 1
+                else:
+                    words_in_segment = i_sent_word - segment_start_word # number of words of curSentence in curSegment
+                    prop = words_in_segment / len(sentence_words)
+                    speaker_sentences[i_sent]['segments'].append((i_seg_global, prop))
+                    
+                    i_seg += 1
+                    i_seg_word = 0
+                    i_seg_global, cur_segment = speaker_segments[i_seg]
+                    segment_start_word = i_sent_word 
+
+            # if didn't finish a segment, then sentence is part of that segment
+            words_in_segment = i_sent_word - segment_start_word
+            if words_in_segment > 0:
                 prop = words_in_segment / len(sentence_words)
-                sorted_sentences[i_sent]['segments'].append((i_seg, prop))
-                
-                i_seg += 1
-                i_seg_word = 0
-                cur_segment = segments[i_seg]
-                segment_start_word = i_sent_word 
+                speaker_sentences[i_sent]['segments'].append((i_seg_global, prop))
+            
+            if len(speaker_sentences[i_sent]['segments']) == 0:
+                speaker_sentences[i_sent]['segments'].append((i_seg_global, 1))
+            i_sent += 1
+        
+        final_sentences.extend(speaker_sentences)
+    return sorted(final_sentences, key=lambda x: x['start'])
 
-        # if didn't finish a segment, still part of segment
-        words_in_segment = i_sent_word - segment_start_word
-        if words_in_segment > 0:
-            prop = words_in_segment / len(sentence_words)
-            sorted_sentences[i_sent]['segments'].append((i_seg, prop))
-        
-        if len(sorted_sentences[i_sent]['segments']) == 0:
-            sorted_sentences[i_sent]['segments'].append((i_seg, 1))
-        i_sent += 1
-        
-    return sorted_sentences
+
+#### Helper Functions ####
+def get_speakers_with_segments(segments_with_speakers: list):
+    speakers_with_segments = defaultdict(list)
+    for i, segment in enumerate(segments_with_speakers):
+        speakers_with_segments[segment['speaker']].append((i, segment))
+    return speakers_with_segments

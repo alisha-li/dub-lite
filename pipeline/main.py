@@ -20,6 +20,7 @@
 # test video: https://www.youtube.com/watch?v=jIZkKsf6VYo
 # easier test video: https://www.youtube.com/watch?v=YgxyLrnxCH4
 import os
+from re import A
 import subprocess
 from dotenv import load_dotenv
 load_dotenv()
@@ -41,6 +42,7 @@ from utils import (
     assign_speakers_to_segments,
     create_sentences,
     classify_emotion,
+    assign_sentences_to_segments,
 )
 from log import setup_logging
 import logging
@@ -91,8 +93,9 @@ class YTDubPipeline:
 
         # list of sentence objects (sentence, start, end, speaker) sorted by start
         sorted_sentences = create_sentences(segments_with_speakers)
-        
-        # After translation, we need a method to assign translated sentences back to segments
+
+        # adds segments prop with list of segments each sentence belongs to
+        sorted_sentences = assign_sentences_to_segments(sorted_sentences, segments)
 
         # 3. Translate and extract emotions
         if finalSentencesPkl:
@@ -126,7 +129,19 @@ class YTDubPipeline:
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
                     pickle.dump(sorted_sentences, f)
+                    
+        # now go through all the segments and add prop of each sentence to each segment
+        translated_segments = segments_with_speakers
+        i_sent = 0
+        for segment in translated_segments:
+            while i < len(sorted_sentences):
 
+        
+                
+        # speaker a sentence 1, speaker b sentence 2, speaker a sentence 1 <-- counter example to assign_sentences_to_segments
+        # maybe try splitting by speaker first?
+
+        
         # 4. Text to Speech and Audio Adjustments
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
         print("TTS model initialized!")
