@@ -44,7 +44,7 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self,src: str, targ: str, hf_token: str, pyannote_key: bool, gemini_api: str, groq_api: str, speakerTurnsPkl: bool, segmentsPkl: bool, finalSentencesPkl: bool):
+    def dub(self, src: str, targ: str, hf_token: str, pyannote_key: str = None, gemini_api: str = None, groq_api: str = None, speakerTurnsPkl: bool = False, segmentsPkl: bool = False, finalSentencesPkl: bool = False):
         # 1. Download video using yt-dlp  
         print(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
@@ -56,7 +56,7 @@ class YTDubPipeline:
                 speaker_turns = pickle.load(f)
             logger.info(f"Loaded {len(speaker_turns)} speaker turns from file!")
         else:
-            speaker_turns, speakers = diarize_audio(orig_audio_path, pyannote_key, hf_token)
+            speaker_turns = diarize_audio(orig_audio_path, pyannote_key, hf_token)
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
         
@@ -83,7 +83,7 @@ class YTDubPipeline:
         sorted_sentences = create_sentences(segments_with_speakers)
 
         # adds segments prop with list of segments each sentence belongs to
-        sorted_sentences = assign_sentences_to_segments(sorted_sentences, segments)
+        sorted_sentences = assign_sentences_to_segments(sorted_sentences, segments_with_speakers)
 
         # 3. Translate and extract emotions
         if finalSentencesPkl:
@@ -105,15 +105,8 @@ class YTDubPipeline:
                     after_context = sorted_sentences[i+1]['sentence']
                 
                 # Translate with context
-                translation = utils.translate(sentence, before_context, after_context, targ)
+                translation = utils.translate(sentence, before_context, after_context, targ, groq_api)
                 sentence_obj['translation'] = translation
-               
-                os.makedirs("temp/emotions_audio", exist_ok=True)
-                start = sentence_obj['start']*1000
-                end = sentence_obj['end']*1000
-                orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
-                sentence_obj['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav")
-                os.remove("temp/emotions_audio/emotions.wav")
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
                     pickle.dump(sorted_sentences, f)
@@ -121,6 +114,15 @@ class YTDubPipeline:
 
         # Map translated sentences to segments
         final_segments = map_translated_sentences_to_segments(sorted_sentences, segments_with_speakers)
+        
+        # Debug: Check segment translations
+        print("\n=== FINAL SEGMENTS CHECK ===")
+        for i, seg in enumerate(final_segments[:5]):  # Show first 5
+            print(f"Segment {i}:")
+            print(f"  Speaker: {seg.get('speaker')}")
+            print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
+            print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
+        print("="*40 + "\n")
         
         # At this point, segments looks like:
         # [
@@ -139,13 +141,32 @@ class YTDubPipeline:
         os.makedirs("temp/audio_chunks", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
         for i, segment in enumerate(final_segments): # this should be by segment, not sentence
+            if segment['speaker'] is None:
+                logger.warning(f"Segment {i} has no speaker, skipping")
+                continue
+            os.makedirs("temp/emotions_audio", exist_ok=True)
+            start = segment['start']*1000
+            end = segment['end']*1000
+            orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
+            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav")
+            os.remove("temp/emotions_audio/emotions.wav")
+            
             print(f"TTS-ing segment {i}")
+            print(f"Translation text: '{segment['translation']}'")
+            print(f"Language: {targ}, Emotion: {segment['emotion']}")
+            
+            # Skip if translation is empty
+            if not segment['translation'] or segment['translation'].strip() == "":
+                logger.warning(f"Segment {i} has empty translation, skipping TTS")
+                continue
+            
             tts.tts_to_file(text=segment['translation'],
                             file_path=f"temp/audio_chunks/{i}.wav",
                             speaker_wav=f"temp/speakers_audio/{segment['speaker']}.wav",
                             language=targ,
                             emotion=segment['emotion'],
-                            speed=1.0) 
+                            speed=1.0)
+
         # 5. Adjust audio (speed/slow, pad/trim)                    
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
         adjust_audio(final_segments, MIN_SPEED=0.8, MAX_SPEED=1.7, orig_audio_len=len(orig_audio))
@@ -171,7 +192,7 @@ class YTDubPipeline:
         return output_video_path
 
 # TODO:
- # 1. Check through functions again to ensure smooths transitions
+ # 1. Check through functions again to ensure smooth transitions
  # 2. Maybe hardcode paths up top?
 
 if __name__ == "__main__":
@@ -182,10 +203,13 @@ if __name__ == "__main__":
     # args = parser.parse_args()
 
     pipeline = YTDubPipeline()
-    result = pipeline.dub(
-        "https://www.youtube.com/watch?v=XXPISZI_big", "en", "zh", 
+    result = pipeline.dub( 
+        src="https://www.youtube.com/watch?v=XXPISZI_big", 
+        targ="zh", 
         hf_token = os.getenv('HF_TOKEN'), 
-        speakerTurnsPkl = False, 
-        segmentsPkl = False, 
-        pyannote_key=os.getenv('PYANNOTE_API_KEY'))
-    print(f"dubbed video path: {result}")
+        speakerTurnsPkl = True, 
+        segmentsPkl = True, 
+        finalSentencesPkl = True,
+        pyannote_key=os.getenv('PYANNOTE_API_KEY'),
+        groq_api=os.environ.get("GROQ_API_KEY"))
+    print(f"Dubbed video path: {result}")

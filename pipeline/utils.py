@@ -110,7 +110,7 @@ def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
 
 def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_dir: str = "temp/speakers_audio"):
     # For voice cloning later
-    speakers = set(list(speaker_turns.values()))
+    speakers = set(speaker_turns.values())
     for speaker in speakers:
         speaker_audio = AudioSegment.empty()
         for key, value in speaker_turns.items():
@@ -130,11 +130,11 @@ def assign_speakers_to_segments(segments: list, speaker_turns: dict):
     time_stamped = []
     wordCount = 0
     segments_with_speakers = []
-    for i, segment in enumerate(segments):
+    for segment in segments:
         first_word_idx = wordCount
-        for i, word in enumerate(segment.words):
+        for word in segment.words:
             wordCount += 1
-            time_stamped.append([word.word, word.start, word.end]) #will be usedlater when determining start and end times for sentences
+            time_stamped.append([word.word, word.start, word.end]) # used later when determining start and end times for sentences
         last_word_idx = wordCount - 1
 
         start = time_stamped[first_word_idx][1]
@@ -143,8 +143,8 @@ def assign_speakers_to_segments(segments: list, speaker_turns: dict):
         resSpeaker = None
         max_overlap = 0
         for times, speaker in speaker_turns.items():
-            speaker_start =  int(times[0])
-            speaker_end = int(times[1])
+            speaker_start = times[0]  # Keep as float!
+            speaker_end = times[1]    # Keep as float!
             if speaker_end < start:
                 continue
             elif speaker_start > end:
@@ -179,10 +179,10 @@ def create_sentences(segments_with_speakers: list):
     speakers_with_sentences = defaultdict(list)            
     for speaker, segments in speakers_with_segments.items():
         fullTextList = []
-        for segment in segments:
-            for word in segment.words:
+        for i, segment in segments:
+            for word in segment['words']:
                 fullTextList.append([word.word, word.start, word.end])
-        fullTextStr = " ".join(fullTextList)
+        fullTextStr = " ".join([word[0] for word in fullTextList])
         sentences = sent_tokenize(fullTextStr)
         
         word_idx = 0
@@ -205,9 +205,10 @@ def create_sentences(segments_with_speakers: list):
     sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
     return sorted_sentences
 
-def translate(sentence, before_context, after_context, targ, groq_api: str, gemini_api: str):
+def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None):
+    import time
     if groq_api:
-        client = Groq(api_key=os.environ.get("GROQ_API_KEY"),)
+        client = Groq(api_key=groq_api,)
         completion = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
@@ -218,6 +219,7 @@ def translate(sentence, before_context, after_context, targ, groq_api: str, gemi
             ]
         )
         translation = completion.choices[0].message.content.strip()
+        time.sleep(2)  # Wait 2 seconds between requests to avoid rate limits
         return translation
     elif gemini_api:
         return "Nothing yet, gemini api not implemented"
@@ -225,17 +227,21 @@ def translate(sentence, before_context, after_context, targ, groq_api: str, gemi
         return "Nothing yet, no api key provided"
 
 def classify_emotion(audio_path: str):
-    classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
-    out_prob, score, index, text_lab = classifier.classify_file(audio_path)
-    return text_lab[0]
+    try:
+        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
+        out_prob, score, index, text_lab = classifier.classify_file(audio_path)
+        return text_lab[0]
+    except Exception as e:
+        logger.warning(f"Emotion classification failed: {e}, using 'neutral'")
+        return "neutral"
 
-def assign_sentences_to_segments(sorted_sentences: list, segments: list):
+def assign_sentences_to_segments(sorted_sentences: list, segments_with_speakers: list):
     """
     Adds segments property with list of segments to each sentence. 
     'segments' --> (segment_index, proportion_of_sentence_in_segment)
     """
 
-    speakers_with_segments = get_speakers_with_segments(segments)
+    speakers_with_segments = get_speakers_with_segments(segments_with_speakers)
     final_sentences = []
     for speaker, speaker_segments in speakers_with_segments.items():
         speaker_sentences = [sentence for sentence in sorted_sentences if sentence['speaker'] == speaker]
@@ -291,8 +297,20 @@ def map_translated_sentences_to_segments(sorted_sentences: list, segments: list)
         segment['translation'] = []
 
     for i, sentence_obj in enumerate(sorted_sentences):
-        words = sentence_obj['translation'].split()
-        total_words = len(sentence_obj['translation'].split())
+        translation_text = sentence_obj['translation']
+        
+        # For languages without spaces (Chinese, Japanese), split by characters
+        # For languages with spaces (English, Spanish), split by words
+        if ' ' in translation_text and len(translation_text.split()) > 1:
+            # Has spaces - split by words
+            words = translation_text.split()
+            join_with = " "
+        else:
+            # No spaces or single word - split by characters
+            words = list(translation_text)
+            join_with = ""
+        
+        total_words = len(words)
         word_idx = 0
 
         for j, (i_seg_global, prop) in enumerate(sentence_obj['segments']):
@@ -343,6 +361,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
             if (translated_dur == orig_dur and drift_ms == 0):
                 # Exact match and on schedule - just copy
                 adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
+                speed_factor = 1.0
         
             elif (orig_dur < translated_dur < target_dur):
                 logger.info("orig_dur < translated_dur < target_dur")
@@ -391,9 +410,9 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                 sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr) # {Link: soundfile.write https://pypi.org/project/soundfile/}
                 adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
 
-                if os.path.exists("temp/audio_chunks/{i}_slowed.wav"):
+                if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
                     logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
-                    os.remove("temp/audio_chunks/{i}_slowed.wav")
+                    os.remove(f"temp/audio_chunks/{i}_slowed.wav")
 
 
                 # If still shorter after slowing, pad with silence
