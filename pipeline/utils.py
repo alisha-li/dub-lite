@@ -243,7 +243,7 @@ def translate(sentence, before_context, after_context, targ: str, groq_api: str 
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{before_context} {sentence} {after_context} Correct any typos and ONLY output {targ} translation of '{sentence}'. Do not output any thing else."""
+                    "content": f"""{before_context} {sentence} {after_context} Correct any typos (especially of similar sounding words since this is from a transcription) and ONLY output {targ} translation of '{sentence}'. DO NOT output any thing besides the translation."""
                 }
             ]
         )
@@ -395,20 +395,26 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                 speed_factor = 1.0
         
             elif (orig_dur < translated_dur < target_dur):
-                logger.info("orig_dur < translated_dur < target_dur")
-                range_size = target_dur - orig_dur
-                distance_from_orig = translated_dur - orig_dur
-                ratio = distance_from_orig / range_size
-                speed_factor = 1.0 + (ratio * (MAX_SPEED - 1.0))
-                adjAudio = audio.speedup(playback_speed=speed_factor)
+                speed_factor = 1.0
+                adjAudio = audio
+                total_audio = usable_prev_silence + translated_dur
+                remaining = target_dur - total_audio
+                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=max(0, remaining))
+            # elif (orig_dur < translated_dur < target_dur):
+            #     logger.info("orig_dur < translated_dur < target_dur")
+            #     range_size = target_dur - orig_dur
+            #     distance_from_orig = translated_dur - orig_dur
+            #     ratio = distance_from_orig / range_size
+            #     speed_factor = 1.0 + (ratio * (MAX_SPEED - 1.0))
+            #     adjAudio = audio.speedup(playback_speed=speed_factor)
                 
-                current_total = usable_prev_silence + len(adjAudio)
-                usableNextSilence_needed = target_dur - current_total
-                if usableNextSilence_needed >= 0:
-                    adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usableNextSilence_needed)
-                else:
-                    leftover_prevSilence = usable_prev_silence + usableNextSilence_needed
-                    adjAudio = AudioSegment.silent(duration=leftover_prevSilence) + adjAudio
+            #     current_total = usable_prev_silence + len(adjAudio)
+            #     usableNextSilence_needed = target_dur - current_total
+            #     if usableNextSilence_needed >= 0:
+            #         adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usableNextSilence_needed)
+            #     else:
+            #         leftover_prevSilence = usable_prev_silence + usableNextSilence_needed
+            #         adjAudio = AudioSegment.silent(duration=leftover_prevSilence) + adjAudio
 
             elif translated_dur >= target_dur:
                 logger.info("translated_dur >= target_dur")
@@ -418,61 +424,116 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                     speed_factor = MAX_SPEED
                 adjAudio = audio.speedup(playback_speed=speed_factor)
                 
+            # elif translated_dur < orig_dur:
+            #     logger.info("translated_dur < orig_dur")
+            #     # Need to slow down 
+            #     speed_factor = translated_dur / orig_dur
+            #     if speed_factor < MIN_SPEED: #translated_dur signif shorter than target_dur
+            #         speed_factor = MIN_SPEED
+                
+            #     # 1. Load the audio file
+            #     # y: audio time series, sr: sampling rate
+            #     y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None) # sr=None preserves original sample rate
+
+            #     # 2. Define the stretch factor for slowing down
+            #     # rate < 1.0 slows down; rate > 1.0 speeds up
+            #     slow_rate = speed_factor # Slows down by 25%
+            #     # slow_rate = 0.5 # Halves the speed
+
+            #     # 3. Apply time stretching
+            #     y_slow = librosa.effects.time_stretch(y, rate=slow_rate)
+
+            #     # 4. Save the slowed-down audio
+            #     sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr) # {Link: soundfile.write https://pypi.org/project/soundfile/}
+            #     adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
+
+            #     if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
+            #         logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
+            #         os.remove(f"temp/audio_chunks/{i}_slowed.wav")
+
+
+            #     # If still shorter after slowing, pad with silence
+            #     slowed_dur = len(adjAudio)
+            #     if slowed_dur < target_dur:
+            #         silence_budget = target_dur - slowed_dur
+            #         if silence_budget >= usable_prev_silence:
+            #             # Room for prev silence and some after
+            #             next_silence = silence_budget - usable_prev_silence
+            #             adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=next_silence)
+            #         else:
+            #             # Only room for partial prev silence
+            #             adjAudio = AudioSegment.silent(duration=silence_budget) + adjAudio
             elif translated_dur < orig_dur:
                 logger.info("translated_dur < orig_dur")
-                # Need to slow down 
-                speed_factor = translated_dur / orig_dur
-                if speed_factor < MIN_SPEED: #translated_dur signif shorter than target_dur
-                    speed_factor = MIN_SPEED
                 
-                # 1. Load the audio file
-                # y: audio time series, sr: sampling rate
-                y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None) # sr=None preserves original sample rate
+                # Check if slowdown would be too extreme
+                natural_speed_factor = translated_dur / orig_dur
+                
+                if natural_speed_factor < 0.9:
+                    # Add initial padding to avoid extreme slowdown
+                    logger.info(f"Speed factor {natural_speed_factor:.2f}x < 0.9, adding initial padding")
+                    gap = orig_dur - translated_dur
+                    initial_padding = min(500, gap)
 
-                # 2. Define the stretch factor for slowing down
-                # rate < 1.0 slows down; rate > 1.0 speeds up
-                slow_rate = speed_factor # Slows down by 25%
-                # slow_rate = 0.5 # Halves the speed
-
-                # 3. Apply time stretching
-                y_slow = librosa.effects.time_stretch(y, rate=slow_rate)
-
-                # 4. Save the slowed-down audio
-                sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr) # {Link: soundfile.write https://pypi.org/project/soundfile/}
-                adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
-
-                if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
-                    logger.info(f"Removing temp/audio_chunks/{i}_slowed.wav")
-                    os.remove(f"temp/audio_chunks/{i}_slowed.wav")
-
-
-                # If still shorter after slowing, pad with silence
-                if len(adjAudio) < orig_dur:
-                    adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
-                adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable_next_silence)
-
-            
-        
-            if i == 0:
-                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
-            elif i == len(segments) - 1:
-                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-            adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
-            curDuration += len(adjAudio)
-
-            logger.info(f"SEGMENT {6} AUDIO ADJUSTMENT DETAILS:")
+                    adjAudio = AudioSegment.silent(duration=initial_padding) + audio
+                    
+                    # If still shorter than orig_dur, slow down the audio portion
+                    if len(adjAudio) < orig_dur:
+                        speed_factor = translated_dur / (orig_dur - initial_padding)
+                        if speed_factor < MIN_SPEED:
+                            speed_factor = MIN_SPEED
+                        
+                        y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None)
+                        y_slow = librosa.effects.time_stretch(y, rate=speed_factor)
+                        sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr)
+                        adjAudio_slowed = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
+                        
+                        adjAudio = AudioSegment.silent(duration=initial_padding) + adjAudio_slowed
+                        
+                        if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
+                            os.remove(f"temp/audio_chunks/{i}_slowed.wav")
+                    else:
+                        speed_factor = 1.0  # Padding was more than enough
+                
+                else:
+                    logger.info(f"Speed factor {natural_speed_factor:.2f}x is acceptable, slowing normally")
+                    speed_factor = natural_speed_factor
+                    if speed_factor < MIN_SPEED:
+                        speed_factor = MIN_SPEED
+                    
+                    y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None)
+                    y_slow = librosa.effects.time_stretch(y, rate=speed_factor)
+                    sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr)
+                    adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
+                    
+                    if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
+                        os.remove(f"temp/audio_chunks/{i}_slowed.wav")
+                
+                # Pad to target_dur if needed
+                if len(adjAudio) < target_dur:
+                    remaining = target_dur - len(adjAudio)
+                    adjAudio = adjAudio + AudioSegment.silent(duration=remaining)
+            # TODO:
+                # if next segment is longer than orig_dur, dont slow down as much. This is more complicated
+                # since the usable_prev_silence would be dynamic.
+            logger.info(f"SEGMENT {i} AUDIO ADJUSTMENT DETAILS:")
             logger.info(f"speed factor: {speed_factor}")
             logger.info(f"target dur: {target_dur}")
-            logger.info(f"adjusted audio length: {len(adjAudio)}")
-            logger.info(f"adjAudio duration: {len(adjAudio)}")
+            logger.info(f"adjusted audio dur: {len(adjAudio)}")
             logger.info(f"usable_prev_silence: {usable_prev_silence}")
             logger.info(f"usable_next_silence: {usable_next_silence}")
             logger.info(f"next_silence: {next_silence}")
             logger.info(f"prev_silence: {prev_silence}")
             logger.info(f"orig duration: {orig_dur}")
             logger.info(f"translated duration: {translated_dur}")
-            logger.info(f"transformed duration: {len(adjAudio)}")
             logger.info("-"*80)
+
+            if i == 0:
+                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
+            elif i == len(segments) - 1:
+                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
+            adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
+            curDuration += len(adjAudio)
 
 
 def stitch_chunks(segments):

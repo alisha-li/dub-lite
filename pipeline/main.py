@@ -191,7 +191,7 @@ class YTDubPipeline:
 
         # 5. Adjust audio (speed/slow, pad/trim)                    
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
-        adjust_audio(final_segments, MIN_SPEED=0.8, MAX_SPEED=1.6, orig_audio_len=len(orig_audio))
+        adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=1.6, orig_audio_len=len(orig_audio))
         
         # 6. Stich adjusted audio chunks together
         stitch_chunks(final_segments)
