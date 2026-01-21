@@ -6,6 +6,8 @@ __pycache__/
 .DS_Store
 .git_backup/
 .env
+pipeline.log
+inspect_all.py
 
 # Ignore common temp file types
 *.wav

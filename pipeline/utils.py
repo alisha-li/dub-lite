@@ -451,6 +451,16 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                     adjAudio = adjAudio + AudioSegment.silent(duration=int(orig_dur - len(adjAudio)))
                 adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable_next_silence)
 
+            
+        
+            if i == 0:
+                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
+            elif i == len(segments) - 1:
+                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
+            adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
+            curDuration += len(adjAudio)
+
+            logger.info(f"SEGMENT {6} AUDIO ADJUSTMENT DETAILS:")
             logger.info(f"speed factor: {speed_factor}")
             logger.info(f"target dur: {target_dur}")
             logger.info(f"adjusted audio length: {len(adjAudio)}")
@@ -459,18 +469,10 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
             logger.info(f"usable_next_silence: {usable_next_silence}")
             logger.info(f"next_silence: {next_silence}")
             logger.info(f"prev_silence: {prev_silence}")
-        
-            if i == 0:
-                adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
-            elif i == len(segments) - 1:
-                adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-            adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
-            curDuration += len(adjAudio)
-            
-            logger.info(f"durations for segment {i}:")
             logger.info(f"orig duration: {orig_dur}")
             logger.info(f"translated duration: {translated_dur}")
             logger.info(f"transformed duration: {len(adjAudio)}")
+            logger.info("-"*80)
 
 
 def stitch_chunks(segments):
