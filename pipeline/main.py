@@ -226,7 +226,7 @@ if __name__ == "__main__":
 
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="https://www.youtube.com/watch?v=XXPISZI_big", 
+        src="https://www.youtube.com/watch?v=jIZkKsf6VYo", 
         targ="zh", 
         hf_token = os.getenv('HF_TOKEN'), 
         speakerTurnsPkl = True, 

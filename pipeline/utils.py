@@ -25,6 +25,8 @@ from speechbrain.inference.interfaces import foreign_class
 # adjust_audio
 import librosa
 import soundfile as sf
+import pyrubberband as pyrb
+import numpy as np
 
 # combine_audio_with_background
 import subprocess
@@ -400,6 +402,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                 total_audio = usable_prev_silence + translated_dur
                 remaining = target_dur - total_audio
                 adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=max(0, remaining))
+
             # elif (orig_dur < translated_dur < target_dur):
             #     logger.info("orig_dur < translated_dur < target_dur")
             #     range_size = target_dur - orig_dur
@@ -465,7 +468,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
             #             adjAudio = AudioSegment.silent(duration=silence_budget) + adjAudio
             elif translated_dur < orig_dur:
                 logger.info("translated_dur < orig_dur")
-                
+
                 # Check if slowdown would be too extreme
                 natural_speed_factor = translated_dur / orig_dur
                 
@@ -473,7 +476,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                     # Add initial padding to avoid extreme slowdown
                     logger.info(f"Speed factor {natural_speed_factor:.2f}x < 0.9, adding initial padding")
                     gap = orig_dur - translated_dur
-                    initial_padding = min(500, gap)
+                    initial_padding = min(300, gap)
 
                     adjAudio = AudioSegment.silent(duration=initial_padding) + audio
                     
@@ -483,15 +486,10 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                         if speed_factor < MIN_SPEED:
                             speed_factor = MIN_SPEED
                         
-                        y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None)
-                        y_slow = librosa.effects.time_stretch(y, rate=speed_factor)
-                        sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr)
-                        adjAudio_slowed = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
+                        adjAudio_slowed = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
                         
                         adjAudio = AudioSegment.silent(duration=initial_padding) + adjAudio_slowed
                         
-                        if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
-                            os.remove(f"temp/audio_chunks/{i}_slowed.wav")
                     else:
                         speed_factor = 1.0  # Padding was more than enough
                 
@@ -501,13 +499,7 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
                     if speed_factor < MIN_SPEED:
                         speed_factor = MIN_SPEED
                     
-                    y, sr = librosa.load(f"temp/audio_chunks/{i}.wav", sr=None)
-                    y_slow = librosa.effects.time_stretch(y, rate=speed_factor)
-                    sf.write(f"temp/audio_chunks/{i}_slowed.wav", y_slow, sr)
-                    adjAudio = AudioSegment.from_wav(f"temp/audio_chunks/{i}_slowed.wav")
-                    
-                    if os.path.exists(f"temp/audio_chunks/{i}_slowed.wav"):
-                        os.remove(f"temp/audio_chunks/{i}_slowed.wav")
+                    adjAudio = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
                 
                 # Pad to target_dur if needed
                 if len(adjAudio) < target_dur:
@@ -620,3 +612,21 @@ def calculate_silences(sentence_obj, idx, sentences, orig_audio_len):
 
     #         usable_prev_silence = min(300, max(prev_silence, 0)) # don't start > 300ms before orig start
     #         usable_next_silence = max(next_silence - 300, 0) # allocate 300ms for audio after
+
+
+def stretch_audio(audio_path: str, speed_factor: float):
+    y, sr = sf.read(audio_path)
+    y_stretch = pyrb.time_stretch(y, sr, speed_factor)
+    
+    # Convert to 16-bit PCM
+    y_stretch_int16 = (y_stretch * 32767).astype(np.int16)
+    
+    # Create AudioSegment from numpy array
+    audio_segment = AudioSegment(
+        y_stretch_int16.tobytes(),
+        frame_rate=sr,
+        sample_width=2,  # 2 bytes for 16-bit audio
+        channels=1 if len(y_stretch.shape) == 1 else y_stretch.shape[1]
+    )
+    
+    return audio_segment
