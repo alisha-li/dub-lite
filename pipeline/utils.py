@@ -126,10 +126,33 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
     return output_dir
 
 
+def merge_close_segments(segments, max_gap=0.5):
+    """Merge segments if gap between them is < max_gap seconds"""
+    merged = []
+    current = segments[0]
+    
+    for next_seg in segments[1:]:
+        gap = next_seg.start - current.end
+        if gap < max_gap:
+            # Merge: extend current segment
+            current.end = next_seg.end
+            current.text += " " + next_seg.text
+            current.words.extend(next_seg.words)
+        else:
+            merged.append(current)
+            current = next_seg
+    merged.append(current)
+    return merged
+
+
 def assign_speakers_to_segments(segments: list, speaker_turns: dict):
     time_stamped = []
     wordCount = 0
     segments_with_speakers = []
+    
+    # Get the last speaker (least frequent, grainy) as fallback for unmatched segments
+    fallback_speaker = list(speaker_turns.values())[-1] if speaker_turns else None
+    
     for segment in segments:
         first_word_idx = wordCount
         for word in segment.words:
@@ -158,6 +181,12 @@ def assign_speakers_to_segments(segments: list, speaker_turns: dict):
             if overlap > max_overlap:
                 max_overlap = overlap
                 resSpeaker = speaker
+        
+        # If no overlap found, use fallback speaker (last/least frequent)
+        if resSpeaker is None:
+            resSpeaker = fallback_speaker
+            logger.warning(f"No speaker overlap for segment at {start:.2f}-{end:.2f}s, "
+                          f"using fallback speaker: {resSpeaker}")
                 
         segments_with_speakers.append({
             'text': segment.text,
@@ -239,6 +268,8 @@ def assign_sentences_to_segments(sorted_sentences: list, segments_with_speakers:
     """
     Adds segments property with list of segments to each sentence. 
     'segments' --> (segment_index, proportion_of_sentence_in_segment)
+
+    Assumes sentences are sorted by start time
     """
 
     speakers_with_segments = get_speakers_with_segments(segments_with_speakers)
@@ -288,7 +319,7 @@ def assign_sentences_to_segments(sorted_sentences: list, segments_with_speakers:
     return sorted(final_sentences, key=lambda x: x['start'])
 
 
-def map_translated_sentences_to_segments(sorted_sentences: list, segments: list):
+def map_translated_sentences_to_segments(sentences: list, segments: list):
     """
     Maps translated sentences to segments based on word proportion.
     Returns: segments with translated text
@@ -296,7 +327,7 @@ def map_translated_sentences_to_segments(sorted_sentences: list, segments: list)
     for i, segment in enumerate(segments):
         segment['translation'] = []
 
-    for i, sentence_obj in enumerate(sorted_sentences):
+    for i, sentence_obj in enumerate(sentences):
         translation_text = sentence_obj['translation']
         
         # For languages without spaces (Chinese, Japanese), split by characters
@@ -319,7 +350,7 @@ def map_translated_sentences_to_segments(sorted_sentences: list, segments: list)
             else:
                 num_words = round(total_words*prop)
             segment_words = words[word_idx:word_idx + num_words]
-            segments[i_seg_global]['translation'].append(" ".join(segment_words))
+            segments[i_seg_global]['translation'].append(join_with.join(segment_words))
             word_idx += num_words
         
         # will delete in cleanup

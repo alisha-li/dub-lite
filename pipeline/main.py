@@ -22,6 +22,7 @@ from utils import (
     download_video_and_extract_audio,
     diarize_audio,
     split_speakers_and_denoise,
+    merge_close_segments,
     assign_speakers_to_segments,
     create_sentences,
     classify_emotion,
@@ -45,6 +46,20 @@ class YTDubPipeline:
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
     def dub(self, src: str, targ: str, hf_token: str, pyannote_key: str = None, gemini_api: str = None, groq_api: str = None, speakerTurnsPkl: bool = False, segmentsPkl: bool = False, finalSentencesPkl: bool = False):
+        # Clean up old temp files from previous runs
+        cleanup_dirs = [
+            "temp/speakers_audio",
+            "temp/audio_chunks", 
+            "temp/adjAudio_chunks",
+            "temp/emotions_audio"
+        ]
+        for dir_path in cleanup_dirs:
+            if os.path.exists(dir_path):
+                for file in os.listdir(dir_path):
+                    if file.endswith(".wav"):
+                        os.remove(os.path.join(dir_path, file))
+        logger.info("Cleaned up old temp audio files")
+        
         # 1. Download video using yt-dlp  
         print(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
@@ -62,7 +77,7 @@ class YTDubPipeline:
         
         # Extract speaker audios and denoise (for voice cloning later)
         split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
-                
+                # 192, 193 
         # 2.2.2 Transcription
         if segmentsPkl:
             logger.info("Loading segments pickle...")
@@ -76,44 +91,51 @@ class YTDubPipeline:
             logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:
                 pickle.dump(segments, f)
+        
+        segments = merge_close_segments(segments)
             
         segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
 
-        # list of sentence objects (sentence, start, end, speaker) sorted by start
-        sorted_sentences = create_sentences(segments_with_speakers)
+        # List of sentence objects (sentence, start, end, speaker), sorted by start
+        sentences = create_sentences(segments_with_speakers)
 
-        # adds segments prop with list of segments each sentence belongs to
-        sorted_sentences = assign_sentences_to_segments(sorted_sentences, segments_with_speakers)
+        # Adds segments prop with list of segments each sentence belongs to
+        sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 3. Translate and extract emotions
         if finalSentencesPkl:
             print("Loading existing final sentences from file...")
             with open("temp/final_sentences.pkl", "rb") as f:
-                sorted_sentences = pickle.load(f)
+                sentences = pickle.load(f)
         else:
-            for i, sentence_obj in enumerate(sorted_sentences):
+            for i, sentence_obj in enumerate(sentences):
                 sentence = sentence_obj['sentence']
                 
                 if i == 0:
                     before_context = ""
-                    after_context = sorted_sentences[i+1]['sentence'] if len(sorted_sentences) > 1 else ""
-                elif i == len(sorted_sentences) - 1:
-                    before_context = sorted_sentences[i-1]['sentence']
+                    after_context = sentences[i+1]['sentence'] if len(sentences) > 1 else ""
+                elif i == len(sentences) - 1:
+                    before_context = sentences[i-1]['sentence']
                     after_context = ""
                 else:
-                    before_context = sorted_sentences[i-1]['sentence']
-                    after_context = sorted_sentences[i+1]['sentence']
+                    before_context = sentences[i-1]['sentence']
+                    after_context = sentences[i+1]['sentence']
                 
                 # Translate with context
                 translation = utils.translate(sentence, before_context, after_context, targ, groq_api)
                 sentence_obj['translation'] = translation
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
-                    pickle.dump(sorted_sentences, f)
+                    pickle.dump(sentences, f)
         
 
         # Map translated sentences to segments
-        final_segments = map_translated_sentences_to_segments(sorted_sentences, segments_with_speakers)
+        final_segments = map_translated_sentences_to_segments(sentences, segments_with_speakers)
+        
+        # Save final_segments for inspection
+        with open("temp/final_segments.pkl", "wb") as f:
+            pickle.dump(final_segments, f)
+        logger.info(f"Saved {len(final_segments)} segments to final_segments.pkl")
         
         # Debug: Check segment translations
         print("\n=== FINAL SEGMENTS CHECK ===")
@@ -169,7 +191,7 @@ class YTDubPipeline:
 
         # 5. Adjust audio (speed/slow, pad/trim)                    
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
-        adjust_audio(final_segments, MIN_SPEED=0.8, MAX_SPEED=1.7, orig_audio_len=len(orig_audio))
+        adjust_audio(final_segments, MIN_SPEED=0.8, MAX_SPEED=1.6, orig_audio_len=len(orig_audio))
         
         # 6. Stich adjusted audio chunks together
         stitch_chunks(final_segments)
