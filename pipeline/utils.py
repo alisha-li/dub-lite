@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 # translate
 from groq import Groq
+from google import genai as gemini
 
 # classify_emotion
 from speechbrain.inference.interfaces import foreign_class
@@ -128,18 +129,18 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
     return output_dir
 
 
-def merge_close_segments(segments, max_gap=0.5):
-    """Merge segments if gap between them is < max_gap seconds"""
+def merge_close_segments(segments_with_speakers, max_gap=0.5):
+    """Merge segments if gap between them is < max_gap seconds and shared speaker"""
     merged = []
-    current = segments[0]
+    current = segments_with_speakers[0]
     
-    for next_seg in segments[1:]:
-        gap = next_seg.start - current.end
-        if gap < max_gap:
+    for next_seg in segments_with_speakers[1:]:
+        gap = next_seg['start'] - current['end']
+        if gap < max_gap and current['speaker'] == next_seg['speaker']:
             # Merge: extend current segment
-            current.end = next_seg.end
-            current.text += " " + next_seg.text
-            current.words.extend(next_seg.words)
+            current['end'] = next_seg['end']
+            current['text'] += " " + next_seg['text']
+            current['words'].extend(next_seg['words'])
         else:
             merged.append(current)
             current = next_seg
@@ -236,16 +237,17 @@ def create_sentences(segments_with_speakers: list):
     sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
     return sorted_sentences
 
-def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None):
+def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None, gemini_model: str = "gemini-3-pro-preview"):
     import time
     if groq_api:
+        logger.info(f"Translating with Groq API: {groq_api}")
         client = Groq(api_key=groq_api,)
         completion = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
                 {
                     "role": "user",
-                    "content": f"""{before_context} {sentence} {after_context} Correct any typos (especially of similar sounding words since this is from a transcription) and ONLY output {targ} translation of '{sentence}'. DO NOT output any thing besides the translation."""
+                    "content": f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
                 }
             ]
         )
@@ -253,8 +255,15 @@ def translate(sentence, before_context, after_context, targ: str, groq_api: str 
         time.sleep(2)  # Wait 2 seconds between requests to avoid rate limits
         return translation
     elif gemini_api:
-        return "Nothing yet, gemini api not implemented"
+        logger.info(f"Translating with Gemini API: {gemini_api}")
+        client = gemini.Client(api_key=gemini_api)
+        response = client.models.generate_content(
+            model=gemini_model,
+            contents=f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
+        )
+        return response.text
     else:
+        logger.info("Translating with Helsinski")
         return "Nothing yet, no api key provided"
 
 def classify_emotion(audio_path: str):

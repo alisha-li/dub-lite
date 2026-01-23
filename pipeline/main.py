@@ -91,10 +91,20 @@ class YTDubPipeline:
             logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:
                 pickle.dump(segments, f)
-        
-        segments = merge_close_segments(segments)
             
         segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
+        
+        # Save segments with speakers for inspection
+        with open("temp/segments_with_speakers.pkl", "wb") as f:
+            pickle.dump(segments_with_speakers, f)
+        logger.info(f"Saved {len(segments_with_speakers)} segments with speakers")
+
+        segments_with_speakers = merge_close_segments(segments_with_speakers)
+        
+        # Save merged segments for inspection
+        with open("temp/segments_merged.pkl", "wb") as f:
+            pickle.dump(segments_with_speakers, f)
+        logger.info(f"Saved {len(segments_with_speakers)} merged segments")
 
         # List of sentence objects (sentence, start, end, speaker), sorted by start
         sentences = create_sentences(segments_with_speakers)
@@ -122,7 +132,7 @@ class YTDubPipeline:
                     after_context = sentences[i+1]['sentence']
                 
                 # Translate with context
-                translation = utils.translate(sentence, before_context, after_context, targ, groq_api)
+                translation = utils.translate(sentence, before_context, after_context, targ, gemini_api=gemini_api)
                 sentence_obj['translation'] = translation
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
@@ -223,7 +233,7 @@ if __name__ == "__main__":
     # parser = argparse.ArgumentParser()
     # parser.add_argument('--url', required=True)
     # args = parser.parse_args()
-
+    print(os.getenv('GEMINI_API_KEY'))
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
         src="https://www.youtube.com/watch?v=jIZkKsf6VYo", 
@@ -231,7 +241,7 @@ if __name__ == "__main__":
         hf_token = os.getenv('HF_TOKEN'), 
         speakerTurnsPkl = True, 
         segmentsPkl = True, 
-        finalSentencesPkl = True,
+        finalSentencesPkl = False,
         pyannote_key=os.getenv('PYANNOTE_API_KEY'),
-        groq_api=os.environ.get("GROQ_API_KEY"))
+        gemini_api=os.getenv('GEMINI_API_KEY'))
     print(f"Dubbed video path: {result}")
