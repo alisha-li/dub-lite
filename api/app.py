@@ -5,20 +5,21 @@ from datetime import datetime, timedelta
 from pydantic import BaseModel
 from typing import Optional
 import os
-import sys
-from worker import celery_app, process_videos
+import json
+import redis
+from worker import celery_app, process_video
 
 app = FastAPI()
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
 
-jobs = {}
+redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
-class JobRequest(BaseModel):
-    source_type: str
-    source_url: Optional[str] = None
-    target_language: str
+# class JobRequest(BaseModel):
+#     source_type: str
+#     source_url: Optional[str] = None
+#     target_language: str
 
 @app.get("/")
 def read_root():
@@ -27,7 +28,7 @@ def read_root():
 @app.post("/api/jobs")
 async def create_job(
     file: Optional[UploadFile] = File(None),
-    source_url: Optional[str] = None,
+    source: Optional[str] = None,
     target_language: Optional[str] = None
 ):
     job_id = str(uuid.uuid4())
@@ -44,23 +45,28 @@ async def create_job(
             "status": "pending",
             "progress": 0,
             "source_type": "upload",
-            "source_url": file_path,
+            "source": file_path,
             "target_language": target_language,
             "created_at": datetime.now().isoformat(),
             "expires_at": (datetime.now() + timedelta(hours=1)).isoformat()
         }
+
     else:
         job_data = {
             "job_id": job_id,
             "status": "pending",
             "progress": 0,
             "source_type": "youtube",
-            "source_url": source_url,
+            "source": source,
             "target_language": target_language,
             "created_at": datetime.now().isoformat()
         }
 
-    jobs[job_id] = job_data
+    task = process_video.delay(job_id, source, target_language)
+
+    job_data["celery_task_id"] = task.id
+    redis_client.set(f"job:{job_id}", json.dumps(job_data))
+    redis_client.expire(f"job:{job_id}", 60 * 60 * 24 * 5)  # 5 days
 
     return {
         "job_id": job_id,
