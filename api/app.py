@@ -1,9 +1,12 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 import uuid
 from datetime import datetime, timedelta
 from pydantic import BaseModel
 from typing import Optional
 import os
+import sys
+from worker import celery_app, process_videos
 
 app = FastAPI()
 
@@ -66,7 +69,28 @@ async def create_job(
     }
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str):
+def get_job_status(job_id: str):
     if job_id not in jobs:
-        return {"error": "Job not found"}, 404
+        raise HTTPException(status_code=404, detail="Job not found")
+    
     return jobs[job_id]
+
+@app.get("/api/jobs/{job_id}/download")
+def download_video(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job = jobs[job_id]
+    
+    if job["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Video not ready yet")
+    
+    output_path = job.get("output_path")
+    if not output_path or not os.path.exists(output_path):
+        raise HTTPException(status_code=404, detail="Output file not found")
+    
+    return FileResponse(
+        path=output_path,
+        media_type="video/mp4",
+        filename=f"dubbed_{job_id}.mp4"
+    )
