@@ -45,7 +45,7 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self, src: str, targ: str, hf_token: str, pyannote_key: str = None, gemini_api: str = None, groq_api: str = None, speakerTurnsPkl: bool = False, segmentsPkl: bool = False, finalSentencesPkl: bool = False):
+    def dub(self, src: str, targ: str, hf_token: str, pyannote_key: str = None, gemini_api: str = None, groq_api: str = None, gemini_model: str = None, speakerTurnsPkl: bool = False, segmentsPkl: bool = False, finalSentencesPkl: bool = False):
         # Clean up old temp files from previous runs
         cleanup_dirs = [
             "temp/speakers_audio",
@@ -132,7 +132,7 @@ class YTDubPipeline:
                     after_context = sentences[i+1]['sentence']
                 
                 # Translate with context
-                translation = utils.translate(sentence, before_context, after_context, targ, gemini_api=gemini_api)
+                translation = utils.translate(sentence, before_context, after_context, targ, gemini_api=gemini_api, gemini_model=gemini_model)
                 sentence_obj['translation'] = translation
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
@@ -236,12 +236,14 @@ if __name__ == "__main__":
     print(os.getenv('GEMINI_API_KEY'))
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="https://www.youtube.com/watch?v=jIZkKsf6VYo", 
+        src="https://www.youtube.com/watch?v=KkVZm5UuXIs", 
         targ="zh", 
         hf_token = os.getenv('HF_TOKEN'), 
-        speakerTurnsPkl = True, 
-        segmentsPkl = True, 
+        speakerTurnsPkl = False, 
+        segmentsPkl = False, 
         finalSentencesPkl = False,
         pyannote_key=os.getenv('PYANNOTE_API_KEY'),
-        gemini_api=os.getenv('GEMINI_API_KEY'))
+        gemini_api=os.getenv('GEMINI_API_KEY'),
+        gemini_model="gemini-3-flash-preview"
+    )
     print(f"Dubbed video path: {result}")

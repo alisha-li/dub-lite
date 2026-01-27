@@ -237,7 +237,7 @@ def create_sentences(segments_with_speakers: list):
     sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
     return sorted_sentences
 
-def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None, gemini_model: str = "gemini-3-pro-preview"):
+def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None, gemini_model: str = "gemini-3-flash-preview"):
     import time
     if groq_api:
         logger.info(f"Translating with Groq API: {groq_api}")

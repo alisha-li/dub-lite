@@ -39,6 +39,7 @@ def process_video(self, job_id: str, source_path: str, target_language: str):
             hf_token=os.getenv('HF_TOKEN'), # will add drop downs later
             pyannote_key=os.getenv('PYANNOTE_API_KEY'),
             gemini_api=os.getenv('GEMINI_API_KEY'),
+            gemini_model="gemini-2.5-flash-lite",
             speakerTurnsPkl=False,
             segmentsPkl=False,
             finalSentencesPkl=False

@@ -40,29 +40,24 @@ async def create_job(
             content = await file.read()
             f.write(content)
         
-        job_data = {
-            "job_id": job_id,
-            "status": "pending",
-            "progress": 0,
-            "source_type": "upload",
-            "source": file_path,
-            "target_language": target_language,
-            "created_at": datetime.now().isoformat(),
-            "expires_at": (datetime.now() + timedelta(hours=1)).isoformat()
-        }
+        source_path = file_path
+        source_type = "upload"
 
     else:
-        job_data = {
-            "job_id": job_id,
-            "status": "pending",
-            "progress": 0,
-            "source_type": "youtube",
-            "source": source,
-            "target_language": target_language,
-            "created_at": datetime.now().isoformat()
-        }
+        source_path = source
+        source_type = "youtube"
 
-    task = process_video.delay(job_id, source, target_language)
+    job_data = {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": 0,
+        "source_type": source_type,
+        "source_path": source_path,
+        "target_language": target_language,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    task = process_video.delay(job_id, source_path, target_language)
 
     job_data["celery_task_id"] = task.id
     redis_client.set(f"job:{job_id}", json.dumps(job_data))
@@ -70,33 +65,82 @@ async def create_job(
 
     return {
         "job_id": job_id,
-        "status": "pending",
+        "status": "PENDING",
         "message": "Job created successfully"
     }
 
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):
-    if job_id not in jobs:
+    job_data = redis_client.get(f"job:{job_id}")
+    
+    if not job_data:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    return jobs[job_id]
+    job = json.loads(job_data)
+    
+    task = celery_app.AsyncResult(job["celery_task_id"])
+    job["status"] = task.state
+    if task.state == "SUCCESS":
+        result = task.result
+        if result.get("status") == "failed":
+            job["status"] = "failed"
+            job["error"] = result.get("error", "Unknown error")
+        elif result.get("status") == "completed":
+            job["status"] = "completed"
+            job["output_path"] = result.get("output_path")
+            job["completed_at"] = datetime.now().isoformat()
+    elif task.state == "FAILURE":
+        job["error"] = str(task.info)
+    
+    return job # check this whole function
+    
 
 @app.get("/api/jobs/{job_id}/download")
 def download_video(job_id: str):
-    if job_id not in jobs:
+    job_data = redis_client.get(f"job:{job_id}")
+    
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = json.loads(job_data)
+
+    task = celery_app.AsyncResult(job["celery_task_id"])
+    if task.state == "SUCCESS":
+        result = task.result
+        if result.get("status") == "completed":
+            output_path = result.get("output_path")
+        
+            if not output_path or not os.path.exists(output_path):
+                raise HTTPException(status_code=404, detail="Output file not found")
+        
+        return FileResponse(
+            path=output_path,
+            media_type="video/mp4",
+            filename=f"dubbed_{job_id}.mp4"
+        )
+    elif result.get("status") == "failed":
+                    raise HTTPException(status_code=400, detail=f"Job failed: {result.get('error')}")
+    
+    # If we get here, job is not completed yet
+    raise HTTPException(status_code=400, detail=f"Video not ready yet. Status: {job.get('status')}")
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    job_data = redis_client.get(f"job:{job_id}")
+
+    if not job_data:
         raise HTTPException(status_code=404, detail="Job not found")
     
-    job = jobs[job_id]
+    job = json.loads(job_data)
+
+    try:
+        if "source_path" in job and os.path.exists(job["source_path"]):
+            os.remove(job["source_path"])
+        if "output_path" in job and os.path.exists(job["output_path"]):
+            os.remove(job["output_path"])
+    except Exception as e:
+        print(f"Error deleting files: {e}")
     
-    if job["status"] != "completed":
-        raise HTTPException(status_code=400, detail="Video not ready yet")
+    redis_client.delete(f"job:{job_id}")
     
-    output_path = job.get("output_path")
-    if not output_path or not os.path.exists(output_path):
-        raise HTTPException(status_code=404, detail="Output file not found")
-    
-    return FileResponse(
-        path=output_path,
-        media_type="video/mp4",
-        filename=f"dubbed_{job_id}.mp4"
-    )
+    return {"message": "Job deleted successfully"}
