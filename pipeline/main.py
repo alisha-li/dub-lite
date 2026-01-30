@@ -61,7 +61,7 @@ class YTDubPipeline:
         logger.info("Cleaned up old temp audio files")
         
         # 1. Download video using yt-dlp  
-        print(f"Starting dubbing pipeline for: {src}")
+        logger.info(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
 
         # 2. Speaker Diarization and Transcription
@@ -114,7 +114,7 @@ class YTDubPipeline:
 
         # 3. Translate and extract emotions
         if finalSentencesPkl:
-            print("Loading existing final sentences from file...")
+            logger.info("Loading existing final sentences from file...")
             with open("temp/final_sentences.pkl", "rb") as f:
                 sentences = pickle.load(f)
         else:
@@ -148,13 +148,13 @@ class YTDubPipeline:
         logger.info(f"Saved {len(final_segments)} segments to final_segments.pkl")
         
         # Debug: Check segment translations
-        print("\n=== FINAL SEGMENTS CHECK ===")
+        logger.info("\n=== FINAL SEGMENTS CHECK ===")
         for i, seg in enumerate(final_segments[:5]):  # Show first 5
             print(f"Segment {i}:")
             print(f"  Speaker: {seg.get('speaker')}")
             print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
             print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
-        print("="*40 + "\n")
+        logger.info("="*40 + "\n")
         
         # At this point, segments looks like:
         # [
@@ -183,9 +183,9 @@ class YTDubPipeline:
             segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav")
             os.remove("temp/emotions_audio/emotions.wav")
             
-            print(f"TTS-ing segment {i}")
-            print(f"Translation text: '{segment['translation']}'")
-            print(f"Language: {targ}, Emotion: {segment['emotion']}")
+            logger.info(f"TTS-ing segment {i}")
+            logger.info(f"Translation text: '{segment['translation']}'")
+            logger.info(f"Language: {targ}, Emotion: {segment['emotion']}")
             
             # Skip if translation is empty
             if not segment['translation'] or segment['translation'].strip() == "":
@@ -233,17 +233,13 @@ if __name__ == "__main__":
     # parser = argparse.ArgumentParser()
     # parser.add_argument('--url', required=True)
     # args = parser.parse_args()
-    print(os.getenv('GEMINI_API_KEY'))
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="https://www.youtube.com/watch?v=KkVZm5UuXIs", 
+        src="../api/uploads/904262d7-ddb1-4e95-b419-fa0489f3c271_Alex Honnold BEST MOMENTS Free Soloing Taipei 101 ｜ #SkyscraperLIVE ｜ Netflix [KkVZm5UuXIs].mp4", 
         targ="zh", 
         hf_token = os.getenv('HF_TOKEN'), 
         speakerTurnsPkl = False, 
         segmentsPkl = False, 
         finalSentencesPkl = False,
-        pyannote_key=os.getenv('PYANNOTE_API_KEY'),
-        gemini_api=os.getenv('GEMINI_API_KEY'),
-        gemini_model="gemini-3-flash-preview"
     )
-    print(f"Dubbed video path: {result}")
+    logger.info(f"Dubbed video path: {result}")

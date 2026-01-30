@@ -8,8 +8,16 @@ import os
 import json
 import redis
 from worker import celery_app, process_video
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
@@ -28,8 +36,8 @@ def read_root():
 @app.post("/api/jobs")
 async def create_job(
     file: Optional[UploadFile] = File(None),
-    source: Optional[str] = None,
-    target_language: Optional[str] = None
+    source: Optional[str] = Form(None),
+    target_language: str = Form(None),
 ):
     job_id = str(uuid.uuid4())
 

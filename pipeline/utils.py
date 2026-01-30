@@ -97,14 +97,20 @@ def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
 
     else:  #free
         logger.info("Running speaker diarization (this may take several minutes)...")
-        diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-3.1", use_auth_token=hf_token)
-        diarization = diarizationPipeline(audio_path)
+        diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=hf_token)
+        output = diarizationPipeline(audio_path)
         speaker_turns = {}
+
+        # now test this
+        for turn, speaker in output.speaker_diarization:
+            if abs(turn.end - turn.start) > .2:
+                logger.info(f"Speaker {speaker}: from {turn.start}s to {turn.end}s")
+                speaker_turns[(turn.start, turn.end)] = speaker
     
-        for speech_turn, _, speaker in diarization.itertracks(yield_label=True):
-            if abs(speech_turn.end - speech_turn.start) > .2:
-                logger.info(f"Speaker {speaker}: from {speech_turn.start}s to {speech_turn.end}s")
-                speaker_turns[(speech_turn.start, speech_turn.end)] = speaker
+        # for speech_turn, _, speaker in diarization.itertracks(yield_label=True):
+        #     if abs(speech_turn.end - speech_turn.start) > .2:
+        #         logger.info(f"Speaker {speaker}: from {speech_turn.start}s to {speech_turn.end}s")
+        #         speaker_turns[(speech_turn.start, speech_turn.end)] = speaker
         
         logger.info("Diarization completed")
     
