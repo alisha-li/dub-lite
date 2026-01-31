@@ -38,6 +38,11 @@ async def create_job(
     file: Optional[UploadFile] = File(None),
     source: Optional[str] = Form(None),
     target_language: str = Form(None),
+    gemini_api: Optional[str] = Form(None),
+    gemini_model: Optional[str] = Form(None),
+    pyannote_key: Optional[str] = Form(None),
+    groq_api: Optional[str] = Form(None),
+    hf_token: Optional[str] = Form(None)
 ):
     job_id = str(uuid.uuid4())
 
@@ -65,7 +70,16 @@ async def create_job(
         "created_at": datetime.now().isoformat(),
     }
 
-    task = process_video.delay(job_id, source_path, target_language)
+    task = process_video.delay(
+        job_id, 
+        source_path, 
+        target_language,
+        gemini_api,
+        gemini_model,
+        pyannote_key,
+        groq_api,
+        hf_token
+    )
 
     job_data["celery_task_id"] = task.id
     redis_client.set(f"job:{job_id}", json.dumps(job_data))
@@ -100,7 +114,7 @@ def get_job_status(job_id: str):
     elif task.state == "FAILURE":
         job["error"] = str(task.info)
     
-    return job # check this whole function
+    return job
     
 
 @app.get("/api/jobs/{job_id}/download")

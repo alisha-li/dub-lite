@@ -269,7 +269,8 @@ def translate(sentence, before_context, after_context, targ: str, groq_api: str 
         )
         return response.text
     else:
-        logger.info("Translating with Helsinski")
+        logger.info("Translating with Helsinki")
+        
         return "Nothing yet, no api key provided"
 
 def classify_emotion(audio_path: str):

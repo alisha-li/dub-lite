@@ -27,7 +27,7 @@ celery_app.conf.update(
 )
 
 @celery_app.task(bind=True)
-def process_video(self, job_id: str, source_path: str, target_language: str):
+def process_video(self, job_id: str, source_path: str, target_language: str, gemini_api: str = None, gemini_model: str = None, pyannote_key: str = None, groq_api: str = None, hf_token: str = None):
     """Process video in background using Celery"""
     logger.info(f"Starting job {job_id}")
     
@@ -39,10 +39,11 @@ def process_video(self, job_id: str, source_path: str, target_language: str):
         output_path = pipeline.dub(
             src=source_path,
             targ=target_language,
-            hf_token=os.getenv('HF_TOKEN'), # will add drop downs later
-            # pyannote_key=os.getenv('PYANNOTE_API_KEY'),
-            gemini_api=os.getenv('GEMINI_API_KEY'),
-            gemini_model="gemini-2.5-flash-lite",
+            hf_token=hf_token,
+            gemini_api=gemini_api,
+            gemini_model=gemini_model,
+            pyannote_key=pyannote_key,
+            groq_api=groq_api,
             speakerTurnsPkl=False,
             segmentsPkl=False,
             finalSentencesPkl=False
