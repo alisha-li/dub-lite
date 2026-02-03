@@ -45,19 +45,26 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self, 
-            src: str, 
-            targ: str, 
-            hf_token: str, 
-            pyannote_key: str = None, 
-            gemini_api: str = None, 
-            groq_api: str = None, 
+    def dub(self,
+            src: str,
+            targ: str,
+            hf_token: str,
+            pyannote_key: str = None,
+            gemini_api: str = None,
+            groq_api: str = None,
             groq_model: str = None,
-            gemini_model: str = None, 
-            speakerTurnsPkl: bool = False, 
-            segmentsPkl: bool = False, 
-            finalSentencesPkl: bool = False):
+            gemini_model: str = None,
+            speakerTurnsPkl: bool = False,
+            segmentsPkl: bool = False,
+            finalSentencesPkl: bool = False,
+            progress_callback=None):
+        """progress_callback(stage: str, percent: int) is called at each pipeline stage."""
+        def report(stage: str, percent: int):
+            if progress_callback:
+                progress_callback(stage, percent)
+
         # Clean up old temp files from previous runs
+        report("Starting...", 0)
         cleanup_dirs = [
             "temp/speakers_audio",
             "temp/audio_chunks", 
@@ -70,12 +77,15 @@ class YTDubPipeline:
                     if file.endswith(".wav"):
                         os.remove(os.path.join(dir_path, file))
         logger.info("Cleaned up old temp audio files")
-        
-        # 1. Download video using yt-dlp  
+
+        # 1. Download video using yt-dlp
+        report("Downloading video & extracting audio", 5)
         logger.info(f"Starting dubbing pipeline for: {src}")
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
+        report("Download complete", 10)
 
         # 2. Speaker Diarization and Transcription
+        report("Speaker diarization", 15)
         if speakerTurnsPkl:
             logger.info("Loading pyannote pickle...")
             with open("temp/speaker_turns.pkl", "rb") as f:
@@ -85,9 +95,11 @@ class YTDubPipeline:
             speaker_turns = diarize_audio(orig_audio_path, pyannote_key, hf_token)
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
-        
+        report("Diarization complete", 22)
+
         # Extract speaker audios and denoise (for voice cloning later)
         split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
+        report("Transcription", 25)
         # 2.2.2 Transcription
         if segmentsPkl:
             logger.info("Loading segments pickle...")
@@ -105,7 +117,8 @@ class YTDubPipeline:
             logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:
                 pickle.dump({"segments": segments, "language": src_lang}, f)
-            
+        report("Transcription complete", 35)
+
         segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
         
         # Save segments with speakers for inspection
@@ -114,27 +127,31 @@ class YTDubPipeline:
         logger.info(f"Saved {len(segments_with_speakers)} segments with speakers")
 
         segments_with_speakers = merge_close_segments(segments_with_speakers)
-        
+
         # Save merged segments for inspection
         with open("temp/segments_merged.pkl", "wb") as f:
             pickle.dump(segments_with_speakers, f)
         logger.info(f"Saved {len(segments_with_speakers)} merged segments")
+        report("Assigning speakers", 38)
 
         # List of sentence objects (sentence, start, end, speaker), sorted by start
         sentences = create_sentences(segments_with_speakers)
-
-        # Adds segments prop with list of segments each sentence belongs to
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 3. Translate and extract emotions
+        report("Translation", 40)
         if finalSentencesPkl:
             logger.info("Loading existing final sentences from file...")
             with open("temp/final_sentences.pkl", "rb") as f:
                 sentences = pickle.load(f)
         else:
+            n_sentences = len(sentences)
             for i, sentence_obj in enumerate(sentences):
+                # 40% -> 62% over translation
+                if n_sentences > 0:
+                    report("Translation", 40 + int(22 * (i + 1) / n_sentences))
                 sentence = sentence_obj['sentence']
-                
+
                 if i == 0:
                     before_context = ""
                     after_context = sentences[i+1]['sentence'] if len(sentences) > 1 else ""
@@ -159,7 +176,7 @@ class YTDubPipeline:
                 
                 with open("temp/final_sentences.pkl", "wb") as f:
                     pickle.dump(sentences, f)
-        
+        report("Translation complete", 65)
 
         # Map translated sentences to segments
         final_segments = map_translated_sentences_to_segments(sentences, segments_with_speakers)
@@ -192,9 +209,13 @@ class YTDubPipeline:
         # ]
 
         # 4. Text to Speech
+        report("Text-to-speech", 68)
         os.makedirs("temp/audio_chunks", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
-        for i, segment in enumerate(final_segments): # this should be by segment, not sentence
+        n_segments = len(final_segments)
+        for i, segment in enumerate(final_segments):  # this should be by segment, not sentence
+            if n_segments > 0:
+                report("Text-to-speech", 68 + int(20 * (i + 1) / n_segments))
             if segment['speaker'] is None:
                 logger.warning(f"Segment {i} has no speaker, skipping")
                 continue
@@ -221,14 +242,17 @@ class YTDubPipeline:
                             emotion=segment['emotion'],
                             speed=1.0)
 
-        # 5. Adjust audio (speed/slow, pad/trim)                    
+        # 5. Adjust audio (speed/slow, pad/trim)
+        report("Adjusting audio", 90)
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
         adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=1.6, orig_audio_len=len(orig_audio))
-        
+
         # 6. Stich adjusted audio chunks together
+        report("Stitching audio", 93)
         stitch_chunks(final_segments)
 
         # 7. Overlay dubbed speech, background sounds, and video
+        report("Finalizing video", 96)
         # 7.1 Separate out background sounds
         separator = Separator()
         separator.load_model(model_filename='2_HP-UVR.pth')
@@ -242,7 +266,7 @@ class YTDubPipeline:
 
         # 7.3 Combine with Video
         output_video_path = combine_audio_with_video(combined_audio_path, video_path)
-        
+        report("Done", 100)
         return output_video_path
 
 # TODO:

@@ -65,6 +65,7 @@ async def create_job(
         "job_id": job_id,
         "status": "pending",
         "progress": 0,
+        "stage": "Starting...",
         "source_type": source_type,
         "source_path": source_path,
         "target_language": target_language,
@@ -114,8 +115,20 @@ def get_job_status(job_id: str):
             job["output_path"] = result.get("output_path")
             job["completed_at"] = datetime.now().isoformat()
     elif task.state == "FAILURE":
+        job["status"] = "failed"
         job["error"] = str(task.info)
-    
+    else:
+        # PENDING, STARTED, or PROGRESS — re-fetch job from Redis for latest progress (worker writes there)
+        job["status"] = "processing"
+        raw_latest = redis_client.get(f"job:{job_id}")
+        if raw_latest:
+            latest = json.loads(raw_latest)
+            job["progress"] = latest.get("progress", 0)
+            job["stage"] = latest.get("stage", "Starting...")
+        else:
+            job["progress"] = job.get("progress", 0)
+            job["stage"] = job.get("stage", "Starting...")
+
     return job
     
 
@@ -133,20 +146,19 @@ def download_video(job_id: str):
         result = task.result
         if result.get("status") == "completed":
             output_path = result.get("output_path")
-        
             if not output_path or not os.path.exists(output_path):
                 raise HTTPException(status_code=404, detail="Output file not found")
-        
-        return FileResponse(
-            path=output_path,
-            media_type="video/mp4",
-            filename=f"dubbed_{job_id}.mp4"
-        )
-    elif result.get("status") == "failed":
-                    raise HTTPException(status_code=400, detail=f"Job failed: {result.get('error')}")
-    
-    # If we get here, job is not completed yet
-    raise HTTPException(status_code=400, detail=f"Video not ready yet. Status: {job.get('status')}")
+            return FileResponse(
+                path=output_path,
+                media_type="video/mp4",
+                filename=f"dubbed_{job_id}.mp4"
+            )
+        if result.get("status") == "failed":
+            raise HTTPException(status_code=400, detail=f"Job failed: {result.get('error')}")
+    if task.state == "FAILURE":
+        raise HTTPException(status_code=400, detail=f"Job failed: {task.info}")
+
+    raise HTTPException(status_code=400, detail="Video not ready yet.")
 
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):

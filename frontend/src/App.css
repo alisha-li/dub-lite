@@ -263,3 +263,76 @@
   background: rgba(0, 0, 0, 0.08);
 }
 
+.job-result {
+  margin-top: 1.5rem;
+}
+
+.job-result-stage {
+  font-weight: 500;
+  margin: 0 0 0.5rem;
+  color: rgba(0, 0, 0, 0.8);
+}
+
+.progress-bar-wrap {
+  width: 100%;
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 4px;
+  background: #646cff;
+  transition: width 0.3s ease;
+}
+
+.progress-percent {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: rgba(0, 0, 0, 0.6);
+}
+
+.job-id-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.job-result-error {
+  color: #b32c2c;
+  margin: 0;
+}
+
+.video-container {
+  margin-top: 0.75rem;
+  border-radius: 8px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.result-video {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+}
+
+.download-btn {
+  display: inline-block;
+  margin-top: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: #fff;
+  background: #646cff;
+  border-radius: 8px;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+
+.download-btn:hover {
+  background: #535bf2;
+}
+

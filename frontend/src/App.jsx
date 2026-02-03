@@ -1,5 +1,7 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import './App.css'
+
+const API_BASE = 'http://localhost:8000'
 
 function App() {
   const [file, setFile] = useState(null)
@@ -7,7 +9,10 @@ function App() {
   const [targetLanguage, setTargetLanguage] = useState('en')
   const [isDragging, setIsDragging] = useState(false)
   const [jobId, setJobId] = useState(null)
-  const [jobStatus, setJobStatus] = useState(null)
+  const [jobStatus, setJobStatus] = useState(null) // 'pending' | 'completed' | 'failed'
+  const [jobError, setJobError] = useState(null)
+  const [jobProgress, setJobProgress] = useState(0)
+  const [jobStage, setJobStage] = useState('')
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [translationProvider, setTranslationProvider] = useState('helsinki') // 'groq' | 'gemini' | 'helsinki'
   const [hfToken, setHfToken] = useState('')
@@ -39,14 +44,44 @@ function App() {
     if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
     if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
 
-    const res = await fetch('http://localhost:8000/api/jobs', {
+    const res = await fetch(`${API_BASE}/api/jobs`, {
       method: 'POST',
       body: formData,
     })
     const data = await res.json()
     setJobId(data.job_id)
     setJobStatus('pending')
+    setJobError(null)
+    setJobProgress(0)
+    setJobStage('Starting...')
   }
+
+  // Poll job status until completed or failed; update progress and stage while processing
+  useEffect(() => {
+    if (!jobId || jobStatus !== 'pending') return
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/jobs/${jobId}`)
+        const data = await res.json()
+        if (data.status === 'completed') {
+          setJobStatus('completed')
+          setJobProgress(100)
+          setJobStage('Done')
+          clearInterval(interval)
+        } else if (data.status === 'failed') {
+          setJobStatus('failed')
+          setJobError(data.error || 'Job failed')
+          clearInterval(interval)
+        } else if (data.status === 'processing') {
+          setJobProgress(data.progress ?? 0)
+          setJobStage(data.stage ?? '')
+        }
+      } catch {
+        clearInterval(interval)
+      }
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [jobId, jobStatus])
 
   const handleDrop = (e) => {
     e.preventDefault()
@@ -80,11 +115,13 @@ function App() {
   }
 
   const hasSource = file || youtubeUrl.trim()
+  const noKeysProvided = !groqApi.trim() && !geminiApi.trim() && !hfToken.trim()
   const hasRequiredApiKey =
     (translationProvider === 'groq' && groqApi.trim()) ||
     (translationProvider === 'gemini' && geminiApi.trim()) ||
     (translationProvider === 'helsinki' && hfToken.trim())
-  const canSubmit = hasSource && targetLanguage && hasRequiredApiKey
+  // Allow submit with just source + language (use host default); or with a chosen provider + key
+  const canSubmit = hasSource && targetLanguage && (noKeysProvided || hasRequiredApiKey)
 
   return (
     <div className="app">
@@ -151,6 +188,7 @@ function App() {
             <option value="ru">Russian</option>
             <option value="zh">Chinese</option>
           </select>
+          <p className="field-desc">Must be different from the source language.</p>
         </div>
 
         <div className="advanced">
@@ -290,8 +328,43 @@ function App() {
       </form>
 
       {jobId && (
-        <div className="status">
-          <p>Job started. ID: <code>{jobId}</code></p>
+        <div className="job-result">
+          <div className="status">
+            {jobStatus === 'pending' && (
+              <>
+                <p className="job-result-stage">{jobStage}</p>
+                <div className="progress-bar-wrap">
+                  <div className="progress-bar" style={{ width: `${jobProgress}%` }} />
+                </div>
+                <p className="progress-percent">{jobProgress}%</p>
+                <p className="job-id-note">Job ID: <code>{jobId}</code></p>
+              </>
+            )}
+            {jobStatus === 'failed' && (
+              <p className="job-result-error">Failed: {jobError}</p>
+            )}
+            {jobStatus === 'completed' && (
+              <>
+                <p>Done. Watch below or download.</p>
+                <div className="video-container">
+                  <video
+                    src={`${API_BASE}/api/jobs/${jobId}/download`}
+                    controls
+                    className="result-video"
+                  >
+                    Your browser does not support the video tag.
+                  </video>
+                </div>
+                <a
+                  href={`${API_BASE}/api/jobs/${jobId}/download`}
+                  download={`dubbed_${jobId}.mp4`}
+                  className="download-btn"
+                >
+                  Download video
+                </a>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

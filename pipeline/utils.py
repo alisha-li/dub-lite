@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # translate
 from groq import Groq
 from google import genai as gemini
+from transformers import MarianMTModel, MarianTokenizer
 
 # classify_emotion
 from speechbrain.inference.interfaces import foreign_class
