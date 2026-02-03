@@ -216,6 +216,30 @@
   gap: 0.35rem;
 }
 
+.provider-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.provider-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.provider-option input[type="radio"] {
+  margin: 0;
+}
+
+.advanced-field--optional {
+  padding-top: 0.75rem;
+  border-top: 1px dashed rgba(0, 0, 0, 0.12);
+}
+
 .field-desc {
   margin: 0;
   font-size: 0.75rem;

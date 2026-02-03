@@ -27,7 +27,7 @@ celery_app.conf.update(
 )
 
 @celery_app.task(bind=True)
-def process_video(self, job_id: str, source_path: str, target_language: str, gemini_api: str = None, gemini_model: str = None, pyannote_key: str = None, groq_api: str = None, hf_token: str = None):
+def process_video(self, job_id: str, source_path: str, target_language: str, gemini_api: str = None, gemini_model: str = None, pyannote_key: str = None, groq_api: str = None, groq_model: str = None, hf_token: str = None):
     """Process video in background using Celery"""
     logger.info(f"Starting job {job_id}")
     
@@ -44,6 +44,7 @@ def process_video(self, job_id: str, source_path: str, target_language: str, gem
             gemini_model=gemini_model,
             pyannote_key=pyannote_key,
             groq_api=groq_api,
+            groq_model=groq_model,
             speakerTurnsPkl=False,
             segmentsPkl=False,
             finalSentencesPkl=False

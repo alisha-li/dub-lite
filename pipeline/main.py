@@ -45,7 +45,18 @@ class YTDubPipeline:
         os.makedirs("temp", exist_ok=True)
         os.makedirs("temp/speakers_audio", exist_ok=True)
 
-    def dub(self, src: str, targ: str, hf_token: str, pyannote_key: str = None, gemini_api: str = None, groq_api: str = None, gemini_model: str = None, speakerTurnsPkl: bool = False, segmentsPkl: bool = False, finalSentencesPkl: bool = False):
+    def dub(self, 
+            src: str, 
+            targ: str, 
+            hf_token: str, 
+            pyannote_key: str = None, 
+            gemini_api: str = None, 
+            groq_api: str = None, 
+            groq_model: str = None,
+            gemini_model: str = None, 
+            speakerTurnsPkl: bool = False, 
+            segmentsPkl: bool = False, 
+            finalSentencesPkl: bool = False):
         # Clean up old temp files from previous runs
         cleanup_dirs = [
             "temp/speakers_audio",
@@ -77,20 +88,23 @@ class YTDubPipeline:
         
         # Extract speaker audios and denoise (for voice cloning later)
         split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
-                # 192, 193 
         # 2.2.2 Transcription
         if segmentsPkl:
             logger.info("Loading segments pickle...")
             with open("temp/segments.pkl", "rb") as f:
-                segments = pickle.load(f)
+                data = pickle.load(f)
+                segments = data["segments"]
+                src_lang = data["language"]
+                
         else:
             logger.info("Running Whisper Transcription...")
             model = WhisperModel("medium", device="cpu", compute_type="int8")
             segments, info = model.transcribe(orig_audio_path, word_timestamps=True)
             segments = list(segments) 
+            src_lang = info.language
             logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:
-                pickle.dump(segments, f)
+                pickle.dump({"segments": segments, "language": src_lang}, f)
             
         segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
         
@@ -132,7 +146,15 @@ class YTDubPipeline:
                     after_context = sentences[i+1]['sentence']
                 
                 # Translate with context
-                translation = utils.translate(sentence, before_context, after_context, targ, gemini_api=gemini_api, gemini_model=gemini_model)
+                translation = utils.translate(sentence, 
+                                              before_context, 
+                                              after_context, 
+                                              src_lang, 
+                                              targ, 
+                                              groq_api=groq_api,
+                                              groq_model=groq_model,
+                                              gemini_api=gemini_api, 
+                                              gemini_model=gemini_model)
                 sentence_obj['translation'] = translation
                 
                 with open("temp/final_sentences.pkl", "wb") as f:

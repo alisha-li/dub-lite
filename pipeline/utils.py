@@ -243,13 +243,14 @@ def create_sentences(segments_with_speakers: list):
     sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
     return sorted_sentences
 
-def translate(sentence, before_context, after_context, targ: str, groq_api: str = None, gemini_api: str = None, gemini_model: str = "gemini-3-flash-preview"):
+def translate(sentence, before_context, after_context, src: str, targ: str, groq_api: str = None, groq_model: str = "openai/gpt-oss-120b", gemini_api: str = None, gemini_model: str = "gemini-3-flash-preview"):
     import time
     if groq_api:
         logger.info(f"Translating with Groq API: {groq_api}")
-        client = Groq(api_key=groq_api,)
+        client = Groq(api_key=groq_api)
+        model = groq_model or "openai/gpt-oss-120b"
         completion = client.chat.completions.create(
-            model="openai/gpt-oss-120b",
+            model=model,
             messages=[
                 {
                     "role": "user",
@@ -270,8 +271,23 @@ def translate(sentence, before_context, after_context, targ: str, groq_api: str 
         return response.text
     else:
         logger.info("Translating with Helsinki")
-        
-        return "Nothing yet, no api key provided"
+        model_name = f"Helsinki-NLP/opus-mt-{src}-{targ}"
+
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name).to('cpu')
+
+        def translate_chunk(text):
+            inputs = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=512).to('cpu')
+            out_ids = model.generate(**inputs, max_new_tokens=256)
+            return tokenizer.decode(out_ids[0], skip_special_tokens=True)
+
+        words = sentence.split()
+        if len(words) > 200:
+            parts = [" ".join(words[i:i+200]) for i in range(0, len(words), 200)]
+            outputs = [translate_chunk(p) for p in parts]
+            return " ".join(outputs)
+        else:
+            return translate_chunk(sentence)
 
 def classify_emotion(audio_path: str):
     try:

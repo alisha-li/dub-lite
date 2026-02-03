@@ -42,6 +42,7 @@ async def create_job(
     gemini_model: Optional[str] = Form(None),
     pyannote_key: Optional[str] = Form(None),
     groq_api: Optional[str] = Form(None),
+    groq_model: Optional[str] = Form(None),
     hf_token: Optional[str] = Form(None)
 ):
     job_id = str(uuid.uuid4())
@@ -71,13 +72,14 @@ async def create_job(
     }
 
     task = process_video.delay(
-        job_id, 
-        source_path, 
+        job_id,
+        source_path,
         target_language,
         gemini_api,
         gemini_model,
         pyannote_key,
         groq_api,
+        groq_model,
         hf_token
     )
 

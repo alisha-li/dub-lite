@@ -9,11 +9,13 @@ function App() {
   const [jobId, setJobId] = useState(null)
   const [jobStatus, setJobStatus] = useState(null)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [translationProvider, setTranslationProvider] = useState('helsinki') // 'groq' | 'gemini' | 'helsinki'
   const [hfToken, setHfToken] = useState('')
   const [pyannoteKey, setPyannoteKey] = useState('')
   const [geminiApi, setGeminiApi] = useState('')
   const [geminiModel, setGeminiModel] = useState('')
   const [groqApi, setGroqApi] = useState('')
+  const [groqModel, setGroqModel] = useState('')
   const fileInputRef = useRef(null)
 
   const handleSubmit = async (e) => {
@@ -25,11 +27,17 @@ function App() {
       formData.append('source', youtubeUrl.trim())
     }
     formData.append('target_language', targetLanguage)
-    if (hfToken.trim()) formData.append('hf_token', hfToken.trim())
+    // Only send keys for the selected translation provider (mutually exclusive)
+    if (translationProvider === 'groq') {
+      if (groqApi.trim()) formData.append('groq_api', groqApi.trim())
+      if (groqModel.trim()) formData.append('groq_model', groqModel.trim())
+    }
+    if (translationProvider === 'gemini') {
+      if (geminiApi.trim()) formData.append('gemini_api', geminiApi.trim())
+      if (geminiModel.trim()) formData.append('gemini_model', geminiModel.trim())
+    }
+    if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
     if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
-    if (geminiApi.trim()) formData.append('gemini_api', geminiApi.trim())
-    if (geminiModel.trim()) formData.append('gemini_model', geminiModel.trim())
-    if (groqApi.trim()) formData.append('groq_api', groqApi.trim())
 
     const res = await fetch('http://localhost:8000/api/jobs', {
       method: 'POST',
@@ -72,7 +80,11 @@ function App() {
   }
 
   const hasSource = file || youtubeUrl.trim()
-  const canSubmit = hasSource && targetLanguage
+  const hasRequiredApiKey =
+    (translationProvider === 'groq' && groqApi.trim()) ||
+    (translationProvider === 'gemini' && geminiApi.trim()) ||
+    (translationProvider === 'helsinki' && hfToken.trim())
+  const canSubmit = hasSource && targetLanguage && hasRequiredApiKey
 
   return (
     <div className="app">
@@ -153,59 +165,120 @@ function App() {
           {advancedOpen && (
             <div className="advanced-fields">
               <div className="advanced-field">
-                <label className="label">Hugging Face token</label>
-                <input
-                  type="password"
-                  className="input url-input"
-                  value={hfToken}
-                  onChange={(e) => setHfToken(e.target.value)}
-                  placeholder="Optional"
-                />
-                <p className="field-desc">Free speaker diarization (who spoke when).</p>
+                <label className="label">Translation / API</label>
+                <p className="field-desc">Pick one. Only the selected option’s field(s) are used.</p>
+                <div className="provider-options">
+                  <label className="provider-option">
+                    <input
+                      type="radio"
+                      name="translationProvider"
+                      value="groq"
+                      checked={translationProvider === 'groq'}
+                      onChange={() => setTranslationProvider('groq')}
+                    />
+                    <span>Groq - faster translations</span>
+                  </label>
+                  <label className="provider-option">
+                    <input
+                      type="radio"
+                      name="translationProvider"
+                      value="gemini"
+                      checked={translationProvider === 'gemini'}
+                      onChange={() => setTranslationProvider('gemini')}
+                    />
+                    <span>Gemini - higher quality translations</span>
+                  </label>
+                  <label className="provider-option">
+                    <input
+                      type="radio"
+                      name="translationProvider"
+                      value="helsinki"
+                      checked={translationProvider === 'helsinki'}
+                      onChange={() => setTranslationProvider('helsinki')}
+                    />
+                    <span>Helsinki - free translations</span>
+                  </label>
+                </div>
               </div>
-              <div className="advanced-field">
-                <label className="label">Pyannote API key</label>
+
+              {translationProvider === 'groq' && (
+                <>
+                  <div className="advanced-field">
+                    <label className="label">Groq API key</label>
+                    <input
+                      type="password"
+                      className="input url-input"
+                      value={groqApi}
+                      onChange={(e) => setGroqApi(e.target.value)}
+                      placeholder="Required"
+                    />
+                    <p className="field-desc">Faster translation.</p>
+                  </div>
+                  <div className="advanced-field">
+                    <label className="label">Groq model</label>
+                    <input
+                      type="text"
+                      className="input url-input"
+                      value={groqModel}
+                      onChange={(e) => setGroqModel(e.target.value)}
+                      placeholder="e.g. openai/gpt-oss-120b"
+                    />
+                    <p className="field-desc">Model used for translation when Groq is selected.</p>
+                  </div>
+                </>
+              )}
+
+              {translationProvider === 'gemini' && (
+                <>
+                  <div className="advanced-field">
+                    <label className="label">Gemini API key</label>
+                    <input
+                      type="password"
+                      className="input url-input"
+                      value={geminiApi}
+                      onChange={(e) => setGeminiApi(e.target.value)}
+                      placeholder="Required"
+                    />
+                    <p className="field-desc">Better translation quality.</p>
+                  </div>
+                  <div className="advanced-field">
+                    <label className="label">Gemini model</label>
+                    <input
+                      type="text"
+                      className="input url-input"
+                      value={geminiModel}
+                      onChange={(e) => setGeminiModel(e.target.value)}
+                      placeholder="e.g. gemini-2.5-flash-lite"
+                    />
+                    <p className="field-desc">Model used for translation when Gemini is selected.</p>
+                  </div>
+                </>
+              )}
+
+              {translationProvider === 'helsinki' && (
+                <div className="advanced-field">
+                  <label className="label">Hugging Face token</label>
+                  <input
+                    type="password"
+                    className="input url-input"
+                    value={hfToken}
+                    onChange={(e) => setHfToken(e.target.value)}
+                    placeholder="Required"
+                  />
+                  <p className="field-desc">Free speaker diarization and translation.</p>
+                </div>
+              )}
+
+              <div className="advanced-field advanced-field--optional">
+                <label className="label">Pyannote API key (optional)</label>
                 <input
                   type="password"
                   className="input url-input"
                   value={pyannoteKey}
                   onChange={(e) => setPyannoteKey(e.target.value)}
-                  placeholder="Optional"
+                  placeholder="Better diarization (paid)"
                 />
-                <p className="field-desc">Better diarization quality (paid).</p>
-              </div>
-              <div className="advanced-field">
-                <label className="label">Gemini API key</label>
-                <input
-                  type="password"
-                  className="input url-input"
-                  value={geminiApi}
-                  onChange={(e) => setGeminiApi(e.target.value)}
-                  placeholder="Optional"
-                />
-                <p className="field-desc">Better translation quality.</p>
-              </div>
-              <div className="advanced-field">
-                <label className="label">Gemini model</label>
-                <input
-                  type="text"
-                  className="input url-input"
-                  value={geminiModel}
-                  onChange={(e) => setGeminiModel(e.target.value)}
-                  placeholder="e.g. gemini-2.5-flash-lite"
-                />
-                <p className="field-desc">Model used for translation when Gemini key is set.</p>
-              </div>
-              <div className="advanced-field">
-                <label className="label">Groq API key</label>
-                <input
-                  type="password"
-                  className="input url-input"
-                  value={groqApi}
-                  onChange={(e) => setGroqApi(e.target.value)}
-                  placeholder="Optional"
-                />
-                <p className="field-desc">Faster translation (alternative to Gemini).</p>
+                <p className="field-desc">Better diarization quality. Can be used with any translation option above.</p>
               </div>
             </div>
           )}
