@@ -1,6 +1,6 @@
 # dub-lite
 
-Free/BYOM (bring your own model/api) dubbing.
+Free/BYOM (bring your own model) dubbing.
 
 **Motivation:** While learning languages, I restricted myself to only watching content in my target language. But I love YouTube and felt limited by what I wanted to but could not watch. Not state of the art, but allows language learners to continue listening in their target language. For best translations, use Gemini models (although this is significantly slower than Groq models).
 
