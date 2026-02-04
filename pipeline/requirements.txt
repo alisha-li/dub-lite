@@ -11,7 +11,7 @@ anyio==4.12.1
 appdirs==1.4.4
 asteroid-filterbanks==0.4.0
 attrs==25.4.0
-audio-separator>=0.40,<0.41
+audio-separator==0.41.0
 audioread==3.1.0
 av==16.1.0
 babel==2.17.0
@@ -72,8 +72,8 @@ HyperPyYAML==1.2.3
 idna==3.11
 importlib_metadata==8.7.1
 inflect==7.5.0
-jax>=0.4,<0.7
-jaxlib>=0.4,<0.7
+jax==0.7.2
+jaxlib==0.7.2
 Jinja2==3.1.6
 joblib==1.5.3
 jsonlines==1.2.0
@@ -104,7 +104,7 @@ networkx==3.5
 nltk==3.9.2
 num2words==0.5.14
 numba==0.63.1
-numpy>=1.26,<2
+numpy==1.26.4
 onnx-weekly==1.21.0.dev20260112
 onnx2torch-py313==1.6.0
 onnxruntime==1.23.2
