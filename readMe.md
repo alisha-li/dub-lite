@@ -1,5 +1,5 @@
-Work in progress
-## To Do
+Free or BYOM (Bring your own model/api) dubbing. Originally intended for language learners who want to dub large quantities of videos to their target language.
+
 - [ ] Launch at dub-lite.alishali.info
 - [ ] Connect to GPUs for TTS speedup
 
