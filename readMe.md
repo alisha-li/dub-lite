@@ -1,37 +1,34 @@
 # dub-lite
 
-Free/BYOM (bring your own model/api) dubbing. 
+Free/BYOM (bring your own model/api) dubbing.
 
-Motivation: While learning languages, I restricted myself to only watching content in my target language. But I love YouTube and felt limited by what I wanted to but could not watch. Not state of the art, but allows language learners to continue listening in their target language. For best translations, use Gemini models (although this is significantly slower than Groq models). 
+**Motivation:** While learning languages, I restricted myself to only watching content in my target language. But I love YouTube and felt limited by what I wanted to but could not watch. Not state of the art, but allows language learners to continue listening in their target language. For best translations, use Gemini models (although this is significantly slower than Groq models).
 
 Note, this is still a work in progress. Translation, diarization, etc. models are only so good at the moment, so I'm working on engineering around that, while making the processing quicker.
 
 ---
 
+## Examples
+
 ### Dubbing Example
 
 | Original Video | Dubbed Video |
 | -------------- | ------------ |
-| <video src="https://github.com/user-attachments/assets/3575c600-285c-4e70-abfe-b4830b08440a"> | <video src="https://github.com/user-attachments/assets/f66f66f2-8210-42a7-a8a0-703d2cd1cbd3"> |
-
-
+| <video src="https://github.com/user-attachments/assets/3575c600-285c-4e70-abfe-b4830b08440a"></video> | <video src="https://github.com/user-attachments/assets/f66f66f2-8210-42a7-a8a0-703d2cd1cbd3"></video> |
 
 ### Demo Process
 
 The following video demonstrates the complete dubbing workflow:
 
-<video src="https://github.com/user-attachments/assets/0ece70f1-72ff-463c-a668-19b831ec2e8b">
-
-> [!NOTE]
-> Due to GitHub restrictions, video quality may be reduced. For the best viewing experience, please download the videos directly.
+<video src="https://github.com/user-attachments/assets/0ece70f1-72ff-463c-a668-19b831ec2e8b" width="100"></video>
 
 ---
 
 ## Roadmap
 
 - [ ] Launch at dub-lite.alishali.info
-- [ ] Allow video saves (so that users can dump a bunch of a videos and come back later to view)
-- [ ] Connect to GPUs for TTS speedup
+- [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
+- [ ] Connect to GPUs for TTS, diarization, etc. speedups
 - [ ] Add orig caption option
 
 ## Notes and Design Decisions
