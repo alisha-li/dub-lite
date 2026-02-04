@@ -1,13 +1,14 @@
-Free or BYOM (Bring your own model/api) dubbing. Originally intended for language learners who want to dub large quantities of videos to their target language.
+Free or BYOM (bring your own model/api) dubbing. Originally intended for language learners who want to dub large quantities of videos into their target language.
+
+
+https://github.com/user-attachments/assets/0ece70f1-72ff-463c-a668-19b831ec2e8b
+
 
 - [ ] Launch at dub-lite.alishali.info
 - [ ] Connect to GPUs for TTS speedup
 
-## Some Design Decisions
+## Notes and Design Decisions
 - translated sentences are mapped back to segments via word proportion. That is, if a segment had 25% of sentence A's words and 30% of sentence B's words, after the translation map back, that same segment would have 25% of translated sentence A's words and 30% of translated sentence B's words. An alternative to this is time proportion (i.e. trying to match 25% of sentence A's total audio time)
-
 - Whisper is better at recognizing speech than (even paid) pyannote is at diarizing it.
-
-### Notes
 - To install TTS --> pip install coqui-tts
 
