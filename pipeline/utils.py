@@ -246,28 +246,35 @@ def create_sentences(segments_with_speakers: list):
 
 def translate(sentence, before_context, after_context, src: str, targ: str, groq_api: str = None, groq_model: str = "openai/gpt-oss-120b", gemini_api: str = None, gemini_model: str = "gemini-3-flash-preview"):
     import time
+    prompt = f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
     if groq_api:
         logger.info(f"Translating with Groq API: {groq_api}")
         client = Groq(api_key=groq_api)
         model = groq_model or "openai/gpt-oss-120b"
-        completion = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
-                }
-            ]
-        )
-        translation = completion.choices[0].message.content.strip()
-        time.sleep(2)  # Wait 2 seconds between requests to avoid rate limits
-        return translation
+        last_err = None
+        for attempt in range(3):
+            try:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                translation = completion.choices[0].message.content.strip()
+                time.sleep(2)  # Wait 2 seconds between requests to avoid rate limits
+                return translation
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Groq attempt {attempt + 1}/3 failed: {_sanitize_api_error(e)}")
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+        if last_err is not None:
+            raise RuntimeError(_sanitize_api_error(last_err)) from last_err
+        raise RuntimeError("Groq translation failed for an unknown reason")
     elif gemini_api:
         logger.info(f"Translating with Gemini API: {gemini_api}")
         client = gemini.Client(api_key=gemini_api)
         response = client.models.generate_content(
             model=gemini_model,
-            contents=f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
+            contents=prompt,
         )
         return response.text
     else:

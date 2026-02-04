@@ -281,8 +281,10 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="../api/uploads/904262d7-ddb1-4e95-b419-fa0489f3c271_Alex Honnold BEST MOMENTS Free Soloing Taipei 101 ｜ #SkyscraperLIVE ｜ Netflix [KkVZm5UuXIs].mp4", 
+        src="https://www.youtube.com/watch?v=aJwdWeiSc8c", 
         targ="zh", 
+        gemini_api = os.getenv('GEMINI_API'),
+        gemini_model = os.getenv('GEMINI_MODEL'),
         hf_token = os.getenv('HF_TOKEN'), 
         speakerTurnsPkl = False, 
         segmentsPkl = False, 
