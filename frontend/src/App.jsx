@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
 
-const API_BASE = 'http://localhost:8000'
+// Production: same origin (Nginx proxies /api/). Dev: backend URL.
+const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? 'http://localhost:8000' : '')
 
 function App() {
   const [file, setFile] = useState(null)
@@ -44,16 +45,24 @@ function App() {
     if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
     if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
 
-    const res = await fetch(`${API_BASE}/api/jobs`, {
-      method: 'POST',
-      body: formData,
-    })
-    const data = await res.json()
-    setJobId(data.job_id)
-    setJobStatus('pending')
-    setJobError(null)
-    setJobProgress(0)
-    setJobStage('Starting...')
+    try {
+      const res = await fetch(`${API_BASE}/api/jobs`, {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setJobError(data.detail || data.message || `Request failed (${res.status})`)
+        return
+      }
+      setJobId(data.job_id)
+      setJobStatus('pending')
+      setJobError(null)
+      setJobProgress(0)
+      setJobStage('Starting...')
+    } catch (err) {
+      setJobError(err.message || 'Network error — is the API running?')
+    }
   }
 
   // Poll job status until completed or failed; update progress and stage while processing
