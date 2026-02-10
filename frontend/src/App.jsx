@@ -1,8 +1,13 @@
 import { useState, useRef, useEffect } from 'react'
 import './App.css'
 
-// Production: same origin (Nginx proxies /api/). Dev: backend URL.
-const API_BASE = import.meta.env.VITE_API_BASE ?? (import.meta.env.DEV ? 'http://localhost:8000' : '')
+// Same origin on real domain (Nginx proxies /api/). Localhost dev uses backend URL.
+function getApiBase() {
+  if (typeof import.meta.env?.VITE_API_BASE === 'string' && import.meta.env.VITE_API_BASE) return import.meta.env.VITE_API_BASE
+  if (typeof window !== 'undefined' && window.location?.hostname !== 'localhost') return ''
+  return 'http://localhost:8000'
+}
+const API_BASE = getApiBase()
 
 function App() {
   const [file, setFile] = useState(null)
@@ -52,7 +57,9 @@ function App() {
       })
       const data = await res.json()
       if (!res.ok) {
-        setJobError(data.detail || data.message || `Request failed (${res.status})`)
+        const msg = data.detail || data.message || `Request failed (${res.status})`
+        setJobError(msg)
+        setJobStatus('failed')
         return
       }
       setJobId(data.job_id)
@@ -61,7 +68,10 @@ function App() {
       setJobProgress(0)
       setJobStage('Starting...')
     } catch (err) {
-      setJobError(err.message || 'Network error — is the API running?')
+      const msg = err.message || 'Network error — is the API running?'
+      setJobError(msg)
+      setJobStatus('failed')
+      console.error('Create job failed:', msg, err)
     }
   }
 
@@ -335,6 +345,12 @@ function App() {
           Start dubbing
         </button>
       </form>
+
+      {jobError && !jobId && (
+        <div className="job-result job-result-error-wrap">
+          <p className="job-result-error">Error: {jobError}</p>
+        </div>
+      )}
 
       {jobId && (
         <div className="job-result">
