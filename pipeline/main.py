@@ -18,9 +18,11 @@ import pickle
 from TTS.api import TTS
 from audio_separator.separator import Separator
 import utils
+from speechbrain.inference.interfaces import foreign_class
 from utils import (
     download_video_and_extract_audio,
     diarize_audio,
+    get_denoiser,
     split_speakers_and_denoise,
     merge_close_segments,
     assign_speakers_to_segments,
@@ -96,7 +98,7 @@ class YTDubPipeline:
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
         report("Diarization complete", 22)
-
+        
         # Extract speaker audios and denoise (for voice cloning later)
         split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
         report("Transcription", 25)
@@ -174,8 +176,8 @@ class YTDubPipeline:
                                               gemini_model=gemini_model)
                 sentence_obj['translation'] = translation
                 
-                with open("temp/final_sentences.pkl", "wb") as f:
-                    pickle.dump(sentences, f)
+            with open("temp/final_sentences.pkl", "wb") as f:
+                pickle.dump(sentences, f)
         report("Translation complete", 65)
 
         # Map translated sentences to segments
@@ -213,6 +215,10 @@ class YTDubPipeline:
         os.makedirs("temp/audio_chunks", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
         n_segments = len(final_segments)
+        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", 
+                                   pymodule_file="custom_interface.py", 
+                                   classname="CustomEncoderWav2vec2Classifier",
+                                   device="cpu") # cpu for now, maybe change to gpu later
         for i, segment in enumerate(final_segments):  # this should be by segment, not sentence
             if n_segments > 0:
                 report("Text-to-speech", 68 + int(20 * (i + 1) / n_segments))
@@ -223,7 +229,7 @@ class YTDubPipeline:
             start = segment['start']*1000
             end = segment['end']*1000
             orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")      
-            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav")
+            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav", classifier)
             os.remove("temp/emotions_audio/emotions.wav")
             
             logger.info(f"TTS-ing segment {i}")

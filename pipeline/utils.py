@@ -7,8 +7,11 @@ from pydub import AudioSegment
 from pyannoteai.sdk import Client
 from pyannote.audio import Pipeline as PyannotePipeline
 
-# split_speakers_and_denoise
-from denoise_audio import denoise_audio
+# denoise_audio
+from df import config
+from df.enhance import enhance, init_df, load_audio, save_audio
+import torch
+import sys
 
 # create_sentences
 from collections import defaultdict
@@ -32,6 +35,8 @@ import numpy as np
 
 # combine_audio_with_background
 import subprocess
+
+_helsinki_cache = {}
 
 def download_video_and_extract_audio(
     source, 
@@ -118,9 +123,83 @@ def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
     return speaker_turns
 
 
+def get_denoiser():
+     # Initialize model
+    print("Loading DeepFilterNet2 model...")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Use model name or path from environment variable, default to DeepFilterNet2
+    model_name_or_path = os.environ.get("DEEPFILTERNET_MODEL", "DeepFilterNet2")
+    
+    try:
+        # init_df can take a model name (like "DeepFilterNet2") or a path
+        model, df, _ = init_df(model_name_or_path, config_allow_defaults=True)
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print(f"\nTried to load: {model_name_or_path}")
+        print("You can set DEEPFILTERNET_MODEL environment variable to:")
+        print("  - A model name: 'DeepFilterNet', 'DeepFilterNet2', or 'DeepFilterNet3'")
+        print("  - A path to a model directory")
+        raise e
+    model = model.to(device=device).eval()
+
+    return model, df, device
+
+
+def denoise_audio(input_path: str, output_path: str = None, model=None, df=None, device=None):
+    """Denoise an audio file using DeepFilterNet2"""
+    if model is None or df is None or device is None:
+        model, df, device = get_denoiser()
+
+    if not os.path.exists(input_path):
+        print(f"Error: Input file not found: {input_path}")
+        return False
+    
+    # Generate output path if not provided
+    if output_path is None:
+        base, ext = os.path.splitext(input_path)
+        output_path = f"{base}_denoised{ext}"
+    
+    # Load audio
+    sr = config("sr", 48000, int, section="df")
+    print(f"Loading audio from {input_path}...")
+    sample, meta = load_audio(input_path, sr)
+    
+    # Convert to mono if needed
+    if sample.dim() > 1 and sample.shape[0] > 1:
+        sample = sample.mean(dim=0, keepdim=True)
+    
+    print(f"Audio shape: {sample.shape}, Sample rate: {sr}Hz")
+    
+    # Denoise
+    print("Denoising audio...")
+    sample = sample.to(device)
+    enhanced = enhance(model, df, sample)
+    
+    # Apply fade-in to avoid clicks
+    lim = torch.linspace(0.0, 1.0, int(sr * 0.15), device=device).unsqueeze(0)
+    if lim.shape[1] < enhanced.shape[1]:
+        lim = torch.cat((lim, torch.ones(1, enhanced.shape[1] - lim.shape[1], device=device)), dim=1)
+    enhanced = enhanced * lim
+    
+    # Resample if needed
+    if meta.sample_rate != sr:
+        from df.io import resample
+        enhanced = resample(enhanced, sr, meta.sample_rate)
+        sr = meta.sample_rate
+    
+    # Save
+    print(f"Saving denoised audio to {output_path}...")
+    save_audio(output_path, enhanced.cpu(), sr)
+    
+    print(f"Done! Denoised audio saved to: {output_path}")
+    return True
+
+
 def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_dir: str = "temp/speakers_audio"):
     # For voice cloning later
     speakers = set(speaker_turns.values())
+    model, df, device = get_denoiser()
     for speaker in speakers:
         speaker_audio = AudioSegment.empty()
         for key, value in speaker_turns.items():
@@ -129,7 +208,7 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
                 end = int(key[1])*1000
                 speaker_audio += audio[start:end]  # Extract this speaker's audio segments
         speaker_audio.export(f"{output_dir}/{speaker}.wav", format="wav")
-        if denoise_audio(f"{output_dir}/{speaker}.wav", f"{output_dir}/{speaker}.wav"):
+        if denoise_audio(f"{output_dir}/{speaker}.wav", f"{output_dir}/{speaker}.wav", model, df, device):
             logger.info("Using denoised audio for voice cloning")
         else:
             logger.info("Warning: Denoising failed, using original audio")
@@ -259,7 +338,7 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
                     messages=[{"role": "user", "content": prompt}],
                 )
                 translation = completion.choices[0].message.content.strip()
-                time.sleep(2)  # Wait 2 seconds between requests to avoid rate limits
+                time.sleep(.3)  # avoid rate limits
                 return translation
             except Exception as e:
                 last_err = e
@@ -280,9 +359,13 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
     else:
         logger.info("Translating with Helsinki")
         model_name = f"Helsinki-NLP/opus-mt-{src}-{targ}"
-
-        tokenizer = MarianTokenizer.from_pretrained(model_name)
-        model = MarianMTModel.from_pretrained(model_name).to('cpu')
+        cache_key = (src, targ)
+        if cache_key not in _helsinki_cache:
+            _helsinki_cache[cache_key] = (
+                MarianTokenizer.from_pretrained(model_name),
+                MarianMTModel.from_pretrained(model_name).to('cpu'),
+            )
+        tokenizer, model = _helsinki_cache[cache_key]
 
         def translate_chunk(text):
             inputs = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=512).to('cpu')
@@ -297,9 +380,8 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
         else:
             return translate_chunk(sentence)
 
-def classify_emotion(audio_path: str):
+def classify_emotion(audio_path: str, classifier: foreign_class):
     try:
-        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", pymodule_file="custom_interface.py", classname="CustomEncoderWav2vec2Classifier")
         out_prob, score, index, text_lab = classifier.classify_file(audio_path)
         return text_lab[0]
     except Exception as e:
