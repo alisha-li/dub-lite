@@ -37,18 +37,23 @@ def process_video(self, job_id: str, source_path: str, target_language: str, gem
     logger.info(f"Starting job {job_id}")
     
     try:
-        # If no keys provided, use host's Hugging Face token from env (Helsinki translation + diarization)
+        # If no keys provided, use host's Groq from env for translation and HF for diarization
         if not any([(gemini_api or "").strip(), (groq_api or "").strip(), (hf_token or "").strip()]):
+            groq_api = (os.getenv("GROQ_API_KEY") or "").strip() or None
+            groq_model = (groq_model or os.getenv("GROQ_MODEL") or "").strip() or "openai/gpt-oss-120b"
             hf_token = (os.getenv("HF_TOKEN") or "").strip() or None
-            if hf_token:
-                logger.info("Using host default: HF token from env (Helsinki translation + diarization)")
+            if groq_api:
+                logger.info("Using host default: Groq API from env for translation")
             else:
-                logger.warning("No API keys provided and HF_TOKEN not set; diarization/translation may fail")
-        # If user left HF token blank but provided other keys, still try host HF for diarization (pyannote needs it)
-        elif not (hf_token or "").strip():
-            hf_token = (os.getenv("HF_TOKEN") or "").strip() or None
-            if hf_token:
-                logger.info("Using host HF token from env for diarization")
+                logger.warning("No API keys provided and GROQ_API_KEY not set; translation may fail")
+            if not hf_token:
+                logger.warning("HF_TOKEN not set; diarization may fail")
+        else:
+            # If user left HF token blank but provided other keys, still try host HF for diarization (pyannote needs it)
+            if not (hf_token or "").strip():
+                hf_token = (os.getenv("HF_TOKEN") or "").strip() or None
+                if hf_token:
+                    logger.info("Using host HF token from env for diarization")
 
         # Initialize pipeline and run with progress reporting
         pipeline = YTDubPipeline()

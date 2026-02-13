@@ -95,8 +95,8 @@ function App() {
           setJobProgress(data.progress ?? 0)
           setJobStage(data.stage ?? '')
         }
-      } catch {
-        clearInterval(interval)
+      } catch (err) {
+        console.error('Polling job status failed:', err)
       }
     }, 2000)
     return () => clearInterval(interval)
