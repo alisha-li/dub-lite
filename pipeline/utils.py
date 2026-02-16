@@ -10,6 +10,7 @@ from pyannote.audio import Pipeline as PyannotePipeline
 # denoise_audio
 from df import config
 from df.enhance import enhance, init_df, load_audio, save_audio
+from df import utils as df_utils
 import torch
 import sys
 
@@ -65,11 +66,14 @@ def download_video_and_extract_audio(
         print(f"Downloading video from URL: {source}")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
         
+        # Look for cookies file (needed for cloud/Modal where YouTube blocks bots)
+        cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
         ydl_opts = {
             'format': 'best',
             'outtmpl': video_path,
-            # 'cookiesfrombrowser': ('chrome',) # will still work for most videos, but not age-restricted, private, or member-only
         }
+        if os.path.isfile(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([source])
@@ -104,10 +108,13 @@ def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
     else:  #free
         logger.info("Running speaker diarization (this may take several minutes)...")
         diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=hf_token)
+        
+        if torch.cuda.is_available():
+            diarizationPipeline = diarizationPipeline.to(torch.device("cuda"))
+        
         output = diarizationPipeline(audio_path)
         speaker_turns = {}
 
-        # now test this
         for turn, speaker in output.speaker_diarization:
             if abs(turn.end - turn.start) > .2:
                 logger.info(f"Speaker {speaker}: from {turn.start}s to {turn.end}s")
@@ -126,30 +133,17 @@ def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
 def get_denoiser():
      # Initialize model
     print("Loading DeepFilterNet2 model...")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    # Use model name or path from environment variable, default to DeepFilterNet2
-    model_name_or_path = os.environ.get("DEEPFILTERNET_MODEL", "DeepFilterNet2")
-    
     try:
-        # init_df can take a model name (like "DeepFilterNet2") or a path
-        model, df, _ = init_df(model_name_or_path, config_allow_defaults=True)
+        model, df, _ = init_df()
     except Exception as e:
-        print(f"Error loading model: {e}")
-        print(f"\nTried to load: {model_name_or_path}")
-        print("You can set DEEPFILTERNET_MODEL environment variable to:")
-        print("  - A model name: 'DeepFilterNet', 'DeepFilterNet2', or 'DeepFilterNet3'")
-        print("  - A path to a model directory")
         raise e
-    model = model.to(device=device).eval()
-
-    return model, df, device
+    return model, df
 
 
-def denoise_audio(input_path: str, output_path: str = None, model=None, df=None, device=None):
+def denoise_audio(input_path: str, output_path: str = None, model=None, df=None):
     """Denoise an audio file using DeepFilterNet2"""
-    if model is None or df is None or device is None:
-        model, df, device = get_denoiser()
+    if model is None or df is None:
+        model, df = get_denoiser()
 
     if not os.path.exists(input_path):
         print(f"Error: Input file not found: {input_path}")
@@ -171,15 +165,21 @@ def denoise_audio(input_path: str, output_path: str = None, model=None, df=None,
     
     print(f"Audio shape: {sample.shape}, Sample rate: {sr}Hz")
     
-    # Denoise
+    # Denoise — force CPU on GPU hosts (Modal): DeepFilterNet uses get_device() for features;
+    # patch it so model and features stay on CPU and match.
     print("Denoising audio...")
-    sample = sample.to(device)
-    enhanced = enhance(model, df, sample)
+    sample = sample.cpu()
+    _orig = df_utils.get_device
+    df_utils.get_device = lambda: torch.device("cpu")
+    try:
+        enhanced = enhance(model, df, sample)
+    finally:
+        df_utils.get_device = _orig
     
     # Apply fade-in to avoid clicks
-    lim = torch.linspace(0.0, 1.0, int(sr * 0.15), device=device).unsqueeze(0)
+    lim = torch.linspace(0.0, 1.0, int(sr * 0.15)).unsqueeze(0)
     if lim.shape[1] < enhanced.shape[1]:
-        lim = torch.cat((lim, torch.ones(1, enhanced.shape[1] - lim.shape[1], device=device)), dim=1)
+        lim = torch.cat((lim, torch.ones(1, enhanced.shape[1] - lim.shape[1])), dim=1)
     enhanced = enhanced * lim
     
     # Resample if needed
@@ -199,7 +199,7 @@ def denoise_audio(input_path: str, output_path: str = None, model=None, df=None,
 def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_dir: str = "temp/speakers_audio"):
     # For voice cloning later
     speakers = set(speaker_turns.values())
-    model, df, device = get_denoiser()
+    model, df = get_denoiser()
     for speaker in speakers:
         speaker_audio = AudioSegment.empty()
         for key, value in speaker_turns.items():
@@ -208,7 +208,7 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
                 end = int(key[1])*1000
                 speaker_audio += audio[start:end]  # Extract this speaker's audio segments
         speaker_audio.export(f"{output_dir}/{speaker}.wav", format="wav")
-        if denoise_audio(f"{output_dir}/{speaker}.wav", f"{output_dir}/{speaker}.wav", model, df, device):
+        if denoise_audio(f"{output_dir}/{speaker}.wav", f"{output_dir}/{speaker}.wav", model, df):
             logger.info("Using denoised audio for voice cloning")
         else:
             logger.info("Warning: Denoising failed, using original audio")

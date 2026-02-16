@@ -24,6 +24,8 @@ wav2vec2_checkpoints/
 inspect_pickle.py
 inspect_segments_speakers.py
 
+cookies.txt
+
 # # Frontend (if i want to have all gitignores in one place)
 # ## Logs
 # logs

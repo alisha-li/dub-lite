@@ -37,6 +37,7 @@ from utils import (
 )
 from log import setup_logging
 import logging
+import torch
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ class YTDubPipeline:
         def report(stage: str, percent: int):
             if progress_callback:
                 progress_callback(stage, percent)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        compute_type = "float16" if device.type == "cuda" else "int8"
 
         # Clean up old temp files from previous runs
         report("Starting...", 0)
@@ -112,7 +116,7 @@ class YTDubPipeline:
                 
         else:
             logger.info("Running Whisper Transcription...")
-            model = WhisperModel("medium", device="cpu", compute_type="int8")
+            model = WhisperModel("medium", device=device.type, compute_type=compute_type)
             segments, info = model.transcribe(orig_audio_path, word_timestamps=True)
             segments = list(segments) 
             src_lang = info.language
@@ -213,12 +217,12 @@ class YTDubPipeline:
         # 4. Text to Speech
         report("Text-to-speech", 68)
         os.makedirs("temp/audio_chunks", exist_ok=True)
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
+        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP", 
                                    pymodule_file="custom_interface.py", 
                                    classname="CustomEncoderWav2vec2Classifier",
-                                   device="cpu") # cpu for now, maybe change to gpu later
+                                   run_opts={"device": device.type})
         for i, segment in enumerate(final_segments):  # this should be by segment, not sentence
             if n_segments > 0:
                 report("Text-to-speech", 68 + int(20 * (i + 1) / n_segments))
