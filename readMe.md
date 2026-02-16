@@ -24,11 +24,12 @@ The following video demonstrates the complete dubbing workflow:
 
 ---
 
-## Roadmap
+## To Do:
 
-- [ ] Launch at dub-lite.alishali.info
+- [ ] Fix cookies error
+- [ ] Add better updates in status bar
+- [ ] Set up storage for larger videos
 - [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
-- [ ] Connect to GPUs for TTS, diarization, etc. speedups
 - [ ] Add orig caption option
 
 ## Notes and Design Decisions
