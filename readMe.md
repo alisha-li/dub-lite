@@ -26,8 +26,7 @@ The following video demonstrates the complete dubbing workflow:
 
 ## To Do:
 
-- [ ] Fix cookies error
-- [ ] Add better updates in status bar
+- [ ] Fix audio timings after refactor
 - [ ] Set up storage for larger videos
 - [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
 - [ ] Add orig caption option
