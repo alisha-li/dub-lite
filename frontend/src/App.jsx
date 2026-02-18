@@ -11,7 +11,6 @@ const API_BASE = getApiBase()
 
 function App() {
   const [file, setFile] = useState(null)
-  const [youtubeUrl, setYoutubeUrl] = useState('')
   const [targetLanguage, setTargetLanguage] = useState('en')
   const [isDragging, setIsDragging] = useState(false)
   const [jobId, setJobId] = useState(null)
@@ -34,8 +33,6 @@ function App() {
     const formData = new FormData()
     if (file) {
       formData.append('file', file)
-    } else if (youtubeUrl.trim()) {
-      formData.append('source', youtubeUrl.trim())
     }
     formData.append('target_language', targetLanguage)
     // Only send keys for the selected translation provider (mutually exclusive)
@@ -108,7 +105,6 @@ function App() {
     const dropped = e.dataTransfer.files[0]
     if (dropped?.type.startsWith('video/')) {
       setFile(dropped)
-      setYoutubeUrl('')
     }
   }
 
@@ -123,17 +119,15 @@ function App() {
     const chosen = e.target.files?.[0]
     if (chosen) {
       setFile(chosen)
-      setYoutubeUrl('')
     }
   }
 
   const clearSource = () => {
     setFile(null)
-    setYoutubeUrl('')
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  const hasSource = file || youtubeUrl.trim()
+  const hasSource = !!file
   const noKeysProvided = !groqApi.trim() && !geminiApi.trim() && !hfToken.trim()
   const hasRequiredApiKey =
     (translationProvider === 'groq' && groqApi.trim()) ||
@@ -145,7 +139,7 @@ function App() {
   return (
     <div className="app">
       <h1>Video Dubbing</h1>
-      <p className="tagline">Upload a video or paste a YouTube link. Pick a language. We’ll dub it.</p>
+      <p className="tagline">Upload a video. Pick a language. We’ll dub it.</p>
 
       <form onSubmit={handleSubmit} className="form">
         <div className="section">
@@ -173,19 +167,7 @@ function App() {
             )}
           </div>
 
-          <p className="or">or paste a URL</p>
-          <input
-            type="url"
-            className="input url-input"
-            value={youtubeUrl}
-            onChange={(e) => {
-              setYoutubeUrl(e.target.value)
-              if (e.target.value.trim()) setFile(null)
-            }}
-            placeholder="https://www.youtube.com/watch?v=..."
-          />
-
-          {(file || youtubeUrl.trim()) && (
+          {file && (
             <button type="button" className="clear-btn" onClick={clearSource}>
               Clear
             </button>

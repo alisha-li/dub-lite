@@ -11,6 +11,8 @@ from typing import Optional
 import os
 import json
 import redis
+import yt_dlp
+import tempfile
 # from worker import celery_app, process_video
 from fastapi.middleware.cors import CORSMiddleware
 import modal
@@ -69,8 +71,7 @@ async def create_job(
         source_path = file.filename  # just for logging/Redis
         source_type = "upload"
     else:
-        source_path = source
-        source_type = "youtube"
+        raise HTTPException(status_code=400, detail="YouTube URL is required")
 
     job_data = {
         "job_id": job_id,
