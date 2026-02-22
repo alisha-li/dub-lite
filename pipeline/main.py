@@ -34,6 +34,7 @@ from utils import (
     stitch_chunks,
     overlay_audios,
     combine_audio_with_video,
+    tts_segment,
 )
 from log import setup_logging
 import logging
@@ -41,7 +42,6 @@ import torch
 
 setup_logging()
 logger = logging.getLogger(__name__)
-
 
 class YTDubPipeline:
     def __init__(self):
@@ -247,12 +247,9 @@ class YTDubPipeline:
                 AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
                 continue
             
-            tts.tts_to_file(text=segment['translation'],
-                            file_path=f"temp/audio_chunks/{i}.wav",
-                            speaker_wav=f"temp/speakers_audio/{segment['speaker']}.wav",
-                            language=targ,
-                            emotion=segment['emotion'],
-                            speed=1.0)
+            tts_segment(tts, segment['translation'], i, 
+                        f"temp/speakers_audio/{segment['speaker']}.wav",
+                        targ, segment['emotion'])
 
         # 5. Adjust audio (speed/slow, pad/trim)
         report("Adjusting audio", 90)

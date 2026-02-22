@@ -768,3 +768,68 @@ def stretch_audio(audio_path: str, speed_factor: float):
     )
     
     return audio_segment
+
+
+MAX_TTS_CHARS = 250  # stay well under XTTS's 400-token limit
+
+
+def split_text(text: str, max_chars: int = MAX_TTS_CHARS) -> list[str]:
+    """Split text into chunks that fit within the TTS token limit,
+    preferring sentence boundaries, then clause boundaries, then word boundaries."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_chars:
+            chunks.append(remaining)
+            break
+        split_idx = -1
+        for sep in ['. ', '! ', '? ', '。', '！', '？']:
+            idx = remaining.rfind(sep, 0, max_chars)
+            if idx != -1 and idx > split_idx:
+                split_idx = idx + len(sep)
+        if split_idx == -1:
+            for sep in [', ', '; ', '، ']:
+                idx = remaining.rfind(sep, 0, max_chars)
+                if idx != -1:
+                    split_idx = idx + len(sep)
+                    break
+        if split_idx == -1:
+            split_idx = remaining.rfind(' ', 0, max_chars)
+            if split_idx != -1:
+                split_idx += 1
+        if split_idx <= 0:
+            split_idx = max_chars
+        chunks.append(remaining[:split_idx].strip())
+        remaining = remaining[split_idx:].strip()
+    return [c for c in chunks if c]
+
+
+def tts_segment(tts, text: str, seg_index: int,
+                       speaker_wav: str, language: str, emotion: str):
+    """Synthesize a segment, splitting long text into chunks and concatenating."""
+    chunks = split_text(text)
+    if len(chunks) == 1:
+        tts.tts_to_file(text=text,
+                        file_path=f"temp/audio_chunks/{seg_index}.wav",
+                        speaker_wav=speaker_wav,
+                        language=language,
+                        emotion=emotion,
+                        speed=1.0)
+        return
+
+    logger.info(f"Segment {seg_index}: splitting into {len(chunks)} chunks")
+    combined = AudioSegment.empty()
+    for ci, chunk in enumerate(chunks):
+        chunk_path = f"temp/audio_chunks/{seg_index}_part{ci}.wav"
+        tts.tts_to_file(text=chunk,
+                        file_path=chunk_path,
+                        speaker_wav=speaker_wav,
+                        language=language,
+                        emotion=emotion,
+                        speed=1.0)
+        combined += AudioSegment.from_file(chunk_path)
+        os.remove(chunk_path)
+    combined.export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
