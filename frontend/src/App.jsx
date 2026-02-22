@@ -18,6 +18,8 @@ function App() {
   const [jobError, setJobError] = useState(null)
   const [jobProgress, setJobProgress] = useState(0)
   const [jobStage, setJobStage] = useState('')
+  const [outputUrl, setOutputUrl] = useState(null)
+  const [uploading, setUploading] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [translationProvider, setTranslationProvider] = useState('helsinki') // 'groq' | 'gemini' | 'helsinki'
   const [hfToken, setHfToken] = useState('')
@@ -30,45 +32,60 @@ function App() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    const formData = new FormData()
-    if (file) {
-      formData.append('file', file)
-    }
-    formData.append('target_language', targetLanguage)
-    // Only send keys for the selected translation provider (mutually exclusive)
-    if (translationProvider === 'groq') {
-      if (groqApi.trim()) formData.append('groq_api', groqApi.trim())
-      if (groqModel.trim()) formData.append('groq_model', groqModel.trim())
-    }
-    if (translationProvider === 'gemini') {
-      if (geminiApi.trim()) formData.append('gemini_api', geminiApi.trim())
-      if (geminiModel.trim()) formData.append('gemini_model', geminiModel.trim())
-    }
-    if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
-    if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
+    setJobError(null)
+    setJobStatus(null)
+    setOutputUrl(null)
 
     try {
-      const res = await fetch(`${API_BASE}/api/jobs`, {
-        method: 'POST',
-        body: formData,
+      // 1. Get presigned upload URL from API
+      setUploading(true)
+      setJobStage('Getting upload URL...')
+      const urlForm = new FormData()
+      urlForm.append('filename', file.name)
+      const urlRes = await fetch(`${API_BASE}/api/upload-url`, { method: 'POST', body: urlForm })
+      const urlData = await urlRes.json()
+      if (!urlRes.ok) throw new Error(urlData.detail || 'Failed to get upload URL')
+
+      // 2. Upload file directly to Spaces via presigned PUT
+      setJobStage('Uploading video...')
+      const putRes = await fetch(urlData.upload_url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4' },
+        body: file,
       })
-      const data = await res.json()
-      if (!res.ok) {
-        const msg = data.detail || data.message || `Request failed (${res.status})`
-        setJobError(msg)
-        setJobStatus('failed')
-        return
+      if (!putRes.ok) throw new Error(`Upload failed (${putRes.status})`)
+      setUploading(false)
+
+      // 3. Create job with the Spaces object key (no file bytes)
+      setJobStage('Starting...')
+      const formData = new FormData()
+      formData.append('spaces_object_key', urlData.object_key)
+      formData.append('target_language', targetLanguage)
+      if (translationProvider === 'groq') {
+        if (groqApi.trim()) formData.append('groq_api', groqApi.trim())
+        if (groqModel.trim()) formData.append('groq_model', groqModel.trim())
       }
+      if (translationProvider === 'gemini') {
+        if (geminiApi.trim()) formData.append('gemini_api', geminiApi.trim())
+        if (geminiModel.trim()) formData.append('gemini_model', geminiModel.trim())
+      }
+      if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
+      if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
+
+      const res = await fetch(`${API_BASE}/api/jobs`, { method: 'POST', body: formData })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || data.message || `Request failed (${res.status})`)
+
       setJobId(data.job_id)
       setJobStatus('pending')
-      setJobError(null)
       setJobProgress(0)
       setJobStage('Starting...')
     } catch (err) {
+      setUploading(false)
       const msg = err.message || 'Network error — is the API running?'
       setJobError(msg)
       setJobStatus('failed')
-      console.error('Create job failed:', msg, err)
+      console.error('Submit failed:', msg, err)
     }
   }
 
@@ -83,6 +100,7 @@ function App() {
           setJobStatus('completed')
           setJobProgress(100)
           setJobStage('Done')
+          if (data.output_url) setOutputUrl(data.output_url)
           clearInterval(interval)
         } else if (data.status === 'failed') {
           setJobStatus('failed')
@@ -323,8 +341,8 @@ function App() {
           )}
         </div>
 
-        <button type="submit" className="submit" disabled={!canSubmit}>
-          Start dubbing
+        <button type="submit" className="submit" disabled={!canSubmit || uploading}>
+          {uploading ? 'Uploading...' : 'Start dubbing'}
         </button>
       </form>
 
@@ -350,12 +368,12 @@ function App() {
             {jobStatus === 'failed' && (
               <p className="job-result-error">Failed: {jobError}</p>
             )}
-            {jobStatus === 'completed' && (
+            {jobStatus === 'completed' && outputUrl && (
               <>
                 <p>Done. Watch below or download.</p>
                 <div className="video-container">
                   <video
-                    src={`${API_BASE}/api/jobs/${jobId}/download`}
+                    src={outputUrl}
                     controls
                     className="result-video"
                   >
@@ -363,7 +381,7 @@ function App() {
                   </video>
                 </div>
                 <a
-                  href={`${API_BASE}/api/jobs/${jobId}/download`}
+                  href={outputUrl}
                   download={`dubbed_${jobId}.mp4`}
                   className="download-btn"
                 >
