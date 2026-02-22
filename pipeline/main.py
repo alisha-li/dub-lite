@@ -240,9 +240,11 @@ class YTDubPipeline:
             logger.info(f"Translation text: '{segment['translation']}'")
             logger.info(f"Language: {targ}, Emotion: {segment['emotion']}")
             
-            # Skip if translation is empty
+            # Skip if translation is empty — generate silence to keep segment indexing consistent
             if not segment['translation'] or segment['translation'].strip() == "":
-                logger.warning(f"Segment {i} has empty translation, skipping TTS")
+                logger.warning(f"Segment {i} has empty translation, generating silence")
+                dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
+                AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
                 continue
             
             tts.tts_to_file(text=segment['translation'],
