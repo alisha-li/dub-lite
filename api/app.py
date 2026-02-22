@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 import uuid
 import logging
 from datetime import datetime, timedelta
@@ -11,8 +11,9 @@ from typing import Optional
 import os
 import json
 import redis
-import yt_dlp
-import tempfile
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 # from worker import celery_app, process_video
 from fastapi.middleware.cors import CORSMiddleware
 import modal
@@ -39,18 +40,70 @@ os.makedirs("outputs", exist_ok=True)
 
 redis_client = redis.Redis(host='localhost', port=6379, decode_responses=True)
 
-# class JobRequest(BaseModel):
-#     source_type: str
-#     source_url: Optional[str] = None
-#     target_language: str
+def _get_spaces_client():
+    """Returns a boto3 S3 client configured for DigitalOcean Spaces."""
+    key = os.environ.get("SPACES_ACCESS_KEY")
+    secret = os.environ.get("SPACES_SECRET_KEY")
+    endpoint = os.environ.get("SPACES_ENDPOINT")
+    region = os.environ.get("SPACES_REGION")
+    return boto3.client(
+        "s3",
+        region_name=region,
+        endpoint_url=endpoint,
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
+        config=Config(signature_version="s3v4"),
+    )
+
+@app.post("/api/upload-url")
+async def get_upload_url(filename: Optional[str] = Form("video.mp4")):
+    """Returns a presigned PUT URL for direct upload to Spaces, plus the object key."""
+    client = _get_spaces_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Spaces not configured")
+    bucket = os.environ.get("SPACES_BUCKET")
+    if not bucket:
+        raise HTTPException(status_code=503, detail="SPACES_BUCKET not set")
+    safe_name = os.path.basename(filename or "video.mp4").replace("..", "")
+    if not safe_name.lower().endswith((".mp4", ".webm", ".mkv", ".mov", ".avi")):
+        safe_name = f"{safe_name}.mp4" if "." not in safe_name else "video.mp4"
+    object_key = f"uploads/{uuid.uuid4()}/{safe_name}"
+    try:
+        url = client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": bucket, "Key": object_key, "ContentType": "video/mp4"},
+            ExpiresIn=3600,
+        )
+    except ClientError as e:
+        logger.exception("Failed to generate presigned URL")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"upload_url": url, "object_key": object_key}
+
 
 @app.get("/")
 def read_root():
     return {"message": "Video Dubbing API"}
 
+
+def _get_spaces_presigned_get_url(object_key: str, expires_in: int = 3600) -> str:
+    """Generate a presigned GET URL so Modal can download the object from Spaces."""
+    client = _get_spaces_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="Spaces not configured")
+    bucket = os.environ.get("SPACES_BUCKET")
+    if not bucket:
+        raise HTTPException(status_code=503, detail="SPACES_BUCKET not set")
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": object_key},
+        ExpiresIn=expires_in,
+    )
+
+
 @app.post("/api/jobs")
 async def create_job(
     file: Optional[UploadFile] = File(None),
+    spaces_object_key: Optional[str] = Form(None),
     source: Optional[str] = Form(None),
     target_language: str = Form(None),
     gemini_api: Optional[str] = Form(None),
@@ -62,16 +115,24 @@ async def create_job(
 ):
     job_id = str(uuid.uuid4())
 
-    file_bytes = None
-    file_name = None
-
-    if file: 
+    if spaces_object_key and spaces_object_key.strip():
+        src = _get_spaces_presigned_get_url(spaces_object_key.strip())
+        source_path = spaces_object_key
+        source_type = "spaces"
+    elif file:
+        # Upload directly to Spaces, then pass the URL to Modal
+        client = _get_spaces_client()
+        bucket = os.environ.get("SPACES_BUCKET")
+        if not client or not bucket:
+            raise HTTPException(status_code=503, detail="Spaces not configured")
+        object_key = f"uploads/{job_id}/{file.filename}"
         file_bytes = await file.read()
-        file_name = file.filename
-        source_path = file.filename  # just for logging/Redis
+        client.put_object(Bucket=bucket, Key=object_key, Body=file_bytes, ContentType="video/mp4")
+        src = _get_spaces_presigned_get_url(object_key)
+        source_path = object_key
         source_type = "upload"
     else:
-        raise HTTPException(status_code=400, detail="YouTube URL is required")
+        raise HTTPException(status_code=400, detail="Either file or spaces_object_key is required")
 
     job_data = {
         "job_id": job_id,
@@ -84,22 +145,10 @@ async def create_job(
         "created_at": datetime.now().isoformat(),
     }
 
-    # task = process_video.delay(
-    #     job_id,
-    #     source_path,
-    #     target_language,
-    #     gemini_api,
-    #     gemini_model,
-    #     pyannote_key,
-    #     groq_api,
-    #     groq_model,
-    #     hf_token
-    # )
-
     run_pipeline = modal.Function.from_name("dub-lite", "run_dubbing_pipeline")
     call = run_pipeline.spawn(
         job_id=job_id,
-        src=source_path,
+        src=src,
         targ=target_language,
         hf_token=hf_token,
         pyannote_key=pyannote_key,
@@ -107,8 +156,6 @@ async def create_job(
         groq_api=groq_api,
         groq_model=groq_model,
         gemini_model=gemini_model,
-        file_bytes=file_bytes,
-        file_name=file_name,
     )
 
     job_data["modal_call_id"] = call.object_id
@@ -130,12 +177,14 @@ def get_job_status(job_id: str):
     job = json.loads(job_data)
 
     if job.get("status") in ["completed", "failed"]:
-        return {
+        resp = {
             "job_id": job_id,
             "status": job["status"],
-            "output_path": job.get("output_path"),
-            "error": job.get("error")
+            "error": job.get("error"),
         }
+        if job.get("output_spaces_key"):
+            resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=3600)
+        return resp
 
     modal_call_id = job["modal_call_id"]
     if not modal_call_id:
@@ -146,20 +195,12 @@ def get_job_status(job_id: str):
         call = modal.FunctionCall.from_id(modal_call_id)
         
         try:
-            # Try to get result (non-blocking)
-            video_bytes = call.get(timeout=0)
+            output_key = call.get(timeout=0)
             
-            # Success! Save video
-            output_path = f"outputs/{job_id}_output.mp4"
-            os.makedirs("outputs", exist_ok=True)
-            with open(output_path, "wb") as f:
-                f.write(video_bytes)
-            
-            # Update Redis
             job["status"] = "completed"
-            job["output_path"] = output_path
+            job["output_spaces_key"] = output_key
             redis_client.set(f"job:{job_id}", json.dumps(job))
-            redis_client.expire(f"job:{job_id}", 60 * 60 * 24 * 5)  # 5 days
+            redis_client.expire(f"job:{job_id}", 60 * 60 * 24 * 5)
             
         except TimeoutError:
             # Still running — read live progress from Modal Dict
@@ -186,14 +227,16 @@ def get_job_status(job_id: str):
         logger.exception("Modal job %s failed", job_id)
     
     # 3. Return current status
-    return {
+    resp = {
         "job_id": job_id,
         "status": job["status"],
         "progress": job.get("progress", 0),
         "stage": job.get("stage", ""),
-        "output_path": job.get("output_path"),
         "error": job.get("error"),
     }
+    if job.get("output_spaces_key"):
+        resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=3600)
+    return resp
 
 
     # task = celery_app.AsyncResult(job["celery_task_id"])
@@ -228,43 +271,19 @@ def get_job_status(job_id: str):
 @app.get("/api/jobs/{job_id}/download")
 def download_video(job_id: str):
     job_data = redis_client.get(f"job:{job_id}")
-    
     if not job_data:
         raise HTTPException(status_code=404, detail="Job not found")
 
     job = json.loads(job_data)
-
     if job.get("status") != "completed":
         raise HTTPException(status_code=400, detail="Video not ready yet.")
-    
-    output_path = job.get("output_path")
-    if not output_path or not os.path.exists(output_path):
+
+    output_key = job.get("output_spaces_key")
+    if not output_key:
         raise HTTPException(status_code=404, detail="Output file not found")
-    
-    return FileResponse(
-        path=output_path,
-        media_type="video/mp4",
-        filename=f"dubbed_{job_id}.mp4"
-    )
 
-    # task = celery_app.AsyncResult(job["celery_task_id"])
-    # if task.state == "SUCCESS":
-    #     result = task.result
-    #     if result.get("status") == "completed":
-    #         output_path = result.get("output_path")
-    #         if not output_path or not os.path.exists(output_path):
-    #             raise HTTPException(status_code=404, detail="Output file not found")
-    #         return FileResponse(
-    #             path=output_path,
-    #             media_type="video/mp4",
-    #             filename=f"dubbed_{job_id}.mp4"
-    #         )
-    #     if result.get("status") == "failed":
-    #         raise HTTPException(status_code=400, detail=f"Job failed: {result.get('error')}")
-    # if task.state == "FAILURE":
-    #     raise HTTPException(status_code=400, detail=f"Job failed: {task.info}")
-
-    # raise HTTPException(status_code=400, detail="Video not ready yet.")
+    url = _get_spaces_presigned_get_url(output_key, expires_in=3600)
+    return RedirectResponse(url=url, status_code=302)
 
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str):
@@ -276,12 +295,15 @@ def delete_job(job_id: str):
     job = json.loads(job_data)
 
     try:
-        if "source_path" in job and os.path.exists(job["source_path"]):
-            os.remove(job["source_path"])
-        if "output_path" in job and os.path.exists(job["output_path"]):
-            os.remove(job["output_path"])
+        client = _get_spaces_client()
+        bucket = os.environ.get("SPACES_BUCKET")
+        if client and bucket:
+            for key_field in ("source_path", "output_spaces_key"):
+                obj_key = job.get(key_field)
+                if obj_key and obj_key.startswith(("uploads/", "outputs/")):
+                    client.delete_object(Bucket=bucket, Key=obj_key)
     except Exception as e:
-        print(f"Error deleting files: {e}")
+        logger.warning("Error deleting Spaces objects for job %s: %s", job_id, e)
     
     redis_client.delete(f"job:{job_id}")
     

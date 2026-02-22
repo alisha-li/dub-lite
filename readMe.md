@@ -27,7 +27,8 @@ The following video demonstrates the complete dubbing workflow:
 ## To Do:
 
 - [ ] Fix audio timings after refactor
-- [ ] Set up storage for larger videos
+- [ ] Set up storage for larger videos (both for processing and revisiting)
+- [ ] Add cleanup logics for some videos 
 - [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
 - [ ] Add orig caption option
 
@@ -36,3 +37,5 @@ The following video demonstrates the complete dubbing workflow:
 - Translated sentences are mapped back to segments via word proportion. That is, if a segment had 25% of sentence A's words and 30% of sentence B's words, after the translation map back, that same segment would have 25% of translated sentence A's words and 30% of translated sentence B's words. An alternative to this is time proportion (i.e. trying to match 25% of sentence A's total audio time)
 - Whisper is better at recognizing speech than (even paid) pyannote is at diarizing it.
 - To install TTS → `pip install coqui-tts`
+- Chose Modal since pricing is based on amount of time GPU is actually in use.
+- Goal process: I browse youtube for videos. Whenever I see an interesting video, I yt-dlp it into my downloads folder. I then mass upload a bunch of youtube videos to the site when I have the time, and the site will allow me to watch all these in the site. 

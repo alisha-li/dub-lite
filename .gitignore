@@ -26,6 +26,8 @@ inspect_segments_speakers.py
 
 cookies.txt
 
+.cursor/
+
 # # Frontend (if i want to have all gitignores in one place)
 # ## Logs
 # logs

@@ -1,7 +1,10 @@
 # download_video_and_extract_audio
 import os
+import requests
 import yt_dlp
 from pydub import AudioSegment
+
+_YT_DLP_DOMAINS = ("youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv")
 
 # diarize_audio
 from pyannoteai.sdk import Client
@@ -62,19 +65,32 @@ def download_video_and_extract_audio(
     if os.path.isfile(source):
         print(f"Using local video file: {source}")
         video_path = source
+    elif isinstance(source, str) and source.startswith(("http://", "https://")):
+        source_lower = source.lower()
+        if any(domain in source_lower for domain in _YT_DLP_DOMAINS):
+            print(f"Downloading from streaming site via yt-dlp: {source}")
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
+            ydl_opts = {"format": "best", "outtmpl": video_path}
+            if os.path.isfile(cookies_path):
+                ydl_opts["cookiefile"] = cookies_path
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([source])
+        else:
+            print(f"Downloading from direct URL: {source[:80]}...")
+            os.makedirs(os.path.dirname(video_path), exist_ok=True)
+            resp = requests.get(source, stream=True, timeout=600)
+            resp.raise_for_status()
+            with open(video_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    f.write(chunk)
     else:
         print(f"Downloading video from URL: {source}")
         os.makedirs(os.path.dirname(video_path), exist_ok=True)
-        
-        # Look for cookies file (needed for cloud/Modal where YouTube blocks bots)
         cookies_path = os.path.join(os.path.dirname(__file__), "cookies.txt")
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': video_path,
-        }
+        ydl_opts = {"format": "best", "outtmpl": video_path}
         if os.path.isfile(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-        
+            ydl_opts["cookiefile"] = cookies_path
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([source])
     

@@ -2,6 +2,8 @@ import modal
 import os
 import sys
 import traceback
+import boto3
+from botocore.config import Config
 
 app = modal.App("dub-lite")
 
@@ -24,12 +26,28 @@ image = (
 vol = modal.Volume.from_name("dub-lite-volume")
 progress_dict = modal.Dict.from_name("dub-lite-progress", create_if_missing=True)
 
+def _upload_to_spaces(local_path: str, job_id: str) -> str:
+    """Upload the dubbed video to Spaces and return the object key."""
+    client = boto3.client(
+        "s3",
+        region_name=os.environ.get("SPACES_REGION"),
+        endpoint_url=os.environ.get("SPACES_ENDPOINT"),
+        aws_access_key_id=os.environ.get("SPACES_ACCESS_KEY"),
+        aws_secret_access_key=os.environ.get("SPACES_SECRET_KEY"),
+        config=Config(signature_version="s3v4"),
+    )
+    bucket = os.environ.get("SPACES_BUCKET")
+    object_key = f"outputs/{job_id}/dubbed.mp4"
+    client.upload_file(local_path, bucket, object_key, ExtraArgs={"ContentType": "video/mp4"})
+    return object_key
+
+
 @app.function(
     image=image,
     gpu="T4",
     timeout = 3600,
     volumes = {"/models": vol},
-    secrets=[modal.Secret.from_name("dub-env")],
+    secrets=[modal.Secret.from_name("dub-env"), modal.Secret.from_name("dub-spaces")],
 )
 def run_dubbing_pipeline(
     job_id: str,
@@ -44,29 +62,21 @@ def run_dubbing_pipeline(
     speakerTurnsPkl: bool = False,
     segmentsPkl: bool = False,
     finalSentencesPkl: bool = False,
-    file_bytes: bytes = None,
-    file_name: str = None,
 ):
-    """Runs the full dubbing pipeline on GPU"""
+    """Runs the full dubbing pipeline on GPU.
+
+    src accepts: presigned Spaces URL, YouTube URL, or local path.
+    """
 
     os.environ["TORCH_HOME"] = "/models/torch"
     os.environ["HF_HOME"] = "/models/huggingface"
-    os.environ["COQUI_TOS_AGREED"] = "1"  # Accept TTS terms non-interactively (no stdin in Modal)
+    os.environ["COQUI_TOS_AGREED"] = "1"
     sys.path.append("/root")
     sys.path.append("/root/pipeline")
     from pipeline.main import YTDubPipeline
 
-    # Progress callback: writes to modal.Dict so the API can read it
     def report_progress(stage: str, percent: int):
         progress_dict[job_id] = {"stage": stage, "progress": percent}
-
-    # If file bytes were sent, write them to a local file in the container
-    if file_bytes and file_name:
-        os.makedirs("temp", exist_ok=True)
-        local_path = f"temp/{file_name}"
-        with open(local_path, "wb") as f:
-            f.write(file_bytes)
-        src = local_path
 
     try:
         report_progress("Starting...", 0)
@@ -85,9 +95,10 @@ def run_dubbing_pipeline(
             finalSentencesPkl=finalSentencesPkl,
             progress_callback=report_progress,
         )
-        with open(output_path, "rb") as f:
-            video_bytes = f.read()
-        return video_bytes
+        report_progress("Uploading to Spaces...", 95)
+        output_key = _upload_to_spaces(output_path, job_id)
+        report_progress("Done", 100)
+        return output_key
     except Exception as e:
         # Re-raise as simple RuntimeError so Modal can serialize it; include full traceback so you can see which line in main/utils failed
         tb = traceback.format_exc()
