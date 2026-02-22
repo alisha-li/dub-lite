@@ -183,7 +183,7 @@ def get_job_status(job_id: str):
             "error": job.get("error"),
         }
         if job.get("output_spaces_key"):
-            resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=3600)
+            resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=86400)
         return resp
 
     modal_call_id = job["modal_call_id"]
@@ -235,7 +235,7 @@ def get_job_status(job_id: str):
         "error": job.get("error"),
     }
     if job.get("output_spaces_key"):
-        resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=3600)
+        resp["output_url"] = _get_spaces_presigned_get_url(job["output_spaces_key"], expires_in=86400)
     return resp
 
 
