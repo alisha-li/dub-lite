@@ -27,7 +27,9 @@ The following video demonstrates the complete dubbing workflow:
 ## To Do:
 
 - [ ] Fix audio timings after refactor
-- [ ] Set up storage for larger videos (both for processing and revisiting)
+- [ ] Look into whisper transcription for non-english languages (sometimes just silent)
+    - In that case, if pyannote picked something up, maybe just use pyannote
+- [ ] Set up hub where you can view or download all process videos
 - [ ] Add cleanup logics for some videos 
 - [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
 - [ ] Add orig caption option

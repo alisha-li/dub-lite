@@ -267,6 +267,13 @@
   margin-top: 1.5rem;
 }
 
+.job-result-note {
+  font-style: italic;
+  color: var(--color-text-muted, #666);
+  margin: 0 0 0.75rem;
+  font-size: 0.95rem;
+}
+
 .job-result-stage {
   font-weight: 500;
   margin: 0 0 0.5rem;

@@ -341,8 +341,8 @@ function App() {
           )}
         </div>
 
-        <button type="submit" className="submit" disabled={!canSubmit || uploading}>
-          {uploading ? 'Uploading...' : 'Start dubbing'}
+        <button type="submit" className="submit" disabled={!canSubmit || uploading || jobStatus === 'pending'}>
+          {uploading ? 'Uploading...' : jobStatus === 'pending' ? 'Processing...' : 'Start dubbing'}
         </button>
       </form>
 
@@ -357,6 +357,7 @@ function App() {
           <div className="status">
             {jobStatus === 'pending' && (
               <>
+                <p className="job-result-note">This may take a few minutes. Feel free to do something else and check back later.</p>
                 <p className="job-result-stage">{jobStage}</p>
                 <div className="progress-bar-wrap">
                   <div className="progress-bar" style={{ width: `${jobProgress}%` }} />

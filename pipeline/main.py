@@ -116,8 +116,15 @@ class YTDubPipeline:
                 
         else:
             logger.info("Running Whisper Transcription...")
-            model = WhisperModel("medium", device=device.type, compute_type=compute_type)
-            segments, info = model.transcribe(orig_audio_path, word_timestamps=True)
+            model = WhisperModel("large-v3", device=device.type, compute_type=compute_type)
+            segments, info = model.transcribe(
+                                        orig_audio_path,
+                                        task="transcribe",
+                                        word_timestamps=True,
+                                        compression_ratio_threshold=None,
+                                        log_prob_threshold=None,
+                                        no_speech_threshold=None,
+                                    )
             segments = list(segments) 
             src_lang = info.language
             logger.info(f"Transcription completed! Found {len(segments)} segments")
@@ -194,9 +201,10 @@ class YTDubPipeline:
         
         # Debug: Check segment translations
         logger.info("\n=== FINAL SEGMENTS CHECK ===")
-        for i, seg in enumerate(final_segments[:5]):  # Show first 5
+        for i, seg in enumerate(final_segments):
             print(f"Segment {i}:")
             print(f"  Speaker: {seg.get('speaker')}")
+            print(f"  Original text: '{seg.get('text', 'MISSING')}'")
             print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
             print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
         logger.info("="*40 + "\n")
@@ -237,8 +245,6 @@ class YTDubPipeline:
             os.remove("temp/emotions_audio/emotions.wav")
             
             logger.info(f"TTS-ing segment {i}")
-            logger.info(f"Translation text: '{segment['translation']}'")
-            logger.info(f"Language: {targ}, Emotion: {segment['emotion']}")
             
             # Skip if translation is empty — generate silence to keep segment indexing consistent
             if not segment['translation'] or segment['translation'].strip() == "":
@@ -261,7 +267,7 @@ class YTDubPipeline:
         stitch_chunks(final_segments)
 
         # 7. Overlay dubbed speech, background sounds, and video
-        report("Finalizing video", 96)
+        report("Combining background and dubbed audio", 96)
         # 7.1 Separate out background sounds
         separator = Separator()
         separator.load_model(model_filename='2_HP-UVR.pth')

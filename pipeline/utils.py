@@ -358,17 +358,18 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
                 return translation
             except Exception as e:
                 last_err = e
-                logger.warning(f"Groq attempt {attempt + 1}/3 failed: {_sanitize_api_error(e)}")
+                logger.warning(f"Groq attempt {attempt + 1}/3 failed: {e}")
                 if attempt < 2:
                     time.sleep(5 * (attempt + 1))
         if last_err is not None:
-            raise RuntimeError(_sanitize_api_error(last_err)) from last_err
+            raise RuntimeError(last_err) from last_err
         raise RuntimeError("Groq translation failed for an unknown reason")
     elif gemini_api:
-        logger.info(f"Translating with Gemini API: {gemini_api}")
+        model = gemini_model or "gemini-3-flash-preview"
+        logger.info(f"Translating with Gemini API: model={model}")
         client = gemini.Client(api_key=gemini_api)
         response = client.models.generate_content(
-            model=gemini_model,
+            model=model,
             contents=prompt,
         )
         return response.text
@@ -468,11 +469,11 @@ def map_translated_sentences_to_segments(sentences: list, segments: list):
         segment['translation'] = []
 
     for i, sentence_obj in enumerate(sentences):
-        translation_text = sentence_obj['translation']
+        translation_text = sentence_obj.get('translation') or ""
         
         # For languages without spaces (Chinese, Japanese), split by characters
         # For languages with spaces (English, Spanish), split by words
-        if ' ' in translation_text and len(translation_text.split()) > 1:
+        if translation_text and ' ' in translation_text and len(translation_text.split()) > 1:
             # Has spaces - split by words
             words = translation_text.split()
             join_with = " "
