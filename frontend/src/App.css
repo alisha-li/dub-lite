@@ -274,6 +274,11 @@
   font-size: 0.95rem;
 }
 
+.job-result-note-inline {
+  margin-top: 1rem;
+  margin-bottom: 0;
+}
+
 .job-result-stage {
   font-weight: 500;
   margin: 0 0 0.5rem;

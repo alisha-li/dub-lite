@@ -1,0 +1,65 @@
+================================================================================
+sentences.pkl
+================================================================================
+Type: <class 'list'>, Total sentences: 10
+
+Sentence 0:
+  speaker: SPEAKER_00
+  sentence:  My  rule  for  the  season  is  it's  not  a  success  unless  it's  under  354  
+  start: 0.0
+  end: 3.68
+
+Sentence 1:
+  speaker: SPEAKER_00
+  sentence: Welcome  to  the  video.  
+  start: 27.699999999999992
+  end: 29.08
+
+Sentence 2:
+  speaker: SPEAKER_00
+  sentence: It  is  February  13th.  
+  start: 29.18
+  end: 32.26
+
+Sentence 3:
+  speaker: SPEAKER_00
+  sentence: I'm  going  to  race  later  this  afternoon.  
+  start: 32.78
+  end: 35.02
+
+Sentence 4:
+  speaker: SPEAKER_00
+  sentence: It's  currently  about  2 .35  p .m.  
+  start: 35.64
+  end: 38.74
+
+Sentence 5:
+  speaker: SPEAKER_00
+  sentence: I  race  at  about  6 .40  p .m.,  which  means  I'm  going  to  shake  out  in  just  a  few  minutes  here.  
+  start: 38.86
+  end: 44.96
+
+Sentence 6:
+  speaker: SPEAKER_00
+  sentence: I'll  take  you  guys  down  there  with  me  for  my  shakeout.  
+  start: 45.06
+  end: 47.86
+
+Sentence 7:
+  speaker: SPEAKER_00
+  sentence: But  yeah,  shake  out  in  just  a  few  minutes  here.  
+  start: 48.52
+  end: 50.68
+
+Sentence 8:
+  speaker: SPEAKER_00
+  sentence: And  I  want  to  kind  of  go  over  what's  changed  since  the  Boston  video,  which  I  ran  a  mile  and  it  was  okay,  but  it  wasn't  great.  
+  start: 50.82
+  end: 58.62
+
+Sentence 9:
+  speaker: SPEAKER_00
+  sentence: I  ran  like  357  technically.
+  start: 58.82
+  end: 60.46
+

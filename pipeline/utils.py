@@ -20,6 +20,8 @@ import sys
 # create_sentences
 from collections import defaultdict
 from nltk.tokenize import sent_tokenize
+from wtpsplit import SaT
+import pysbd
 import logging
 logger = logging.getLogger(__name__)
 
@@ -317,7 +319,12 @@ def create_sentences(segments_with_speakers: list):
             for word in segment['words']:
                 fullTextList.append([word.word, word.start, word.end])
         fullTextStr = " ".join([word[0] for word in fullTextList])
-        sentences = sent_tokenize(fullTextStr)
+        # sentences = sent_tokenize(fullTextStr)
+        # seg = pysbd.Segmenter(language="en")
+        # sentences = seg.segment(fullTextStr)
+
+        sat = SaT("sat-12l-sm")
+        sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
         for sentence in sentences:
@@ -687,19 +694,190 @@ def overlay_audios(audio1, audio2):
     combined_audio.export("temp/combined_audio.wav", format="wav")
     return "temp/combined_audio.wav"
 
-def combine_audio_with_video(audio_path:str, video_path:str):
-    # Combine new audio with original video
-    command = [
-        'ffmpeg',
-        '-i', video_path,
-        '-i', audio_path,
-        '-c:v', 'copy',  # Copy video stream without re-encoding (fast)
-        '-map', '0:v:0',  # Use video from first input
-        '-map', '1:a:0',  # Use audio from second input
-        '-shortest',  # End when shortest stream ends
-        '-y',  # Overwrite output file if it exists
-        'temp/output_video.mp4'
+def get_video_resolution(video_path: str):
+    """Use ffprobe to get video width and height."""
+    cmd = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=width,height',
+        '-of', 'csv=p=0:s=x',
+        video_path
     ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.warning(f"ffprobe failed: {result.stderr}, defaulting to 1920x1080")
+        return 1920, 1080
+    parts = result.stdout.strip().split('x')
+    return int(parts[0]), int(parts[1])
+
+
+def _add_pinyin(text):
+    """Add pinyin above Chinese text. Returns 'pinyin\\Ncharacters' format for ASS."""
+    try:
+        from pypinyin import lazy_pinyin, Style
+        pinyin = ' '.join(lazy_pinyin(text, style=Style.TONE))
+        return pinyin
+    except ImportError:
+        logger.warning("pypinyin not installed, skipping pinyin generation")
+        return None
+
+
+def create_subtitle_chunks(sentences, target_lang=None):
+    """Convert sentences into subtitle display events.
+
+    One chunk per sentence. Each sentence has its own start/end time from
+    the original transcription, so subtitles track the natural speech rhythm.
+    Sentences have 'sentence' (original) and 'translation' fields.
+    """
+    MIN_DURATION = 1.0
+
+    raw_chunks = []
+    for sent in sentences:
+        original = (sent.get('sentence') or '').strip()
+        translation = (sent.get('translation') or '').strip()
+        start = sent['start']
+        end = sent['end']
+
+        if not original or end - start < 0.2:
+            continue
+
+        # Ensure minimum display time
+        if end - start < MIN_DURATION:
+            end = start + MIN_DURATION
+
+        raw_chunks.append({
+            'start': start,
+            'end': end,
+            'original': original,
+            'translation': translation,
+        })
+
+    # Sort and resolve overlaps: trim previous chunk to end when next starts
+    GAP = 0.05
+    raw_chunks.sort(key=lambda c: c['start'])
+    for i in range(len(raw_chunks) - 1):
+        if raw_chunks[i]['end'] > raw_chunks[i + 1]['start'] - GAP:
+            raw_chunks[i]['end'] = raw_chunks[i + 1]['start'] - GAP
+
+    # Filter out chunks that became too short after overlap trimming
+    chunks = [c for c in raw_chunks if c['end'] - c['start'] >= 0.3]
+
+    # Add pinyin for Chinese target languages
+    if target_lang and target_lang.lower() in ('zh', 'zh-cn', 'zh-tw', 'chinese'):
+        for chunk in chunks:
+            if chunk['translation']:
+                pinyin = _add_pinyin(chunk['translation'])
+                if pinyin:
+                    chunk['pinyin'] = pinyin
+
+    return chunks
+
+
+def _ass_escape(text):
+    """Escape special ASS characters in text."""
+    return text.replace('\\', '\\\\').replace('{', '\\{').replace('}', '\\}')
+
+
+def _format_ass_time(seconds):
+    """Format seconds as ASS timestamp H:MM:SS.cc"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def generate_subtitles(chunks, video_width, video_height, output_path="temp/subtitles.ass"):
+    """Write an ASS subtitle file with all lines in a single block per chunk.
+
+    All text (translation, pinyin, original) is combined into one Dialogue event
+    using \\N line breaks and inline style overrides, so they share one background box.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Scale font sizes to video resolution
+    trans_font_size = max(20, int(video_height * 0.05))
+    orig_font_size = max(14, int(video_height * 0.03))
+    pinyin_font_size = max(12, int(video_height * 0.022))
+    margin_v = max(15, int(video_height * 0.025))
+
+    # Single style — the base style handles the background box.
+    # We use inline overrides {\fsN} to change font size per line.
+    header = f"""[Script Info]
+Title: Dual Subtitles
+ScriptType: v4.00+
+PlayResX: {video_width}
+PlayResY: {video_height}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Sub,Noto Sans,{trans_font_size},&H00FFFFFF,&H000000FF,&H00000000,&HA0000000,-1,0,0,0,100,100,0,0,4,1,0,2,40,40,{margin_v},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    # Inline ASS overrides for each line type
+    # Translation: bold, full white, large (base style already handles this)
+    # Pinyin: smaller, slightly transparent
+    # Original: smaller, slightly transparent, not bold
+    pinyin_prefix = f"{{\\fs{pinyin_font_size}\\b0\\1a&H40&}}"
+    orig_prefix = f"{{\\fs{orig_font_size}\\b0\\1a&H30&}}"
+
+    lines = []
+    for chunk in chunks:
+        start = _format_ass_time(chunk['start'])
+        end = _format_ass_time(chunk['end'])
+
+        # Build combined text: translation \N pinyin \N original
+        parts = []
+        if chunk.get('translation'):
+            parts.append(_ass_escape(chunk['translation']))
+        if chunk.get('pinyin'):
+            parts.append(f"{pinyin_prefix}{_ass_escape(chunk['pinyin'])}")
+        parts.append(f"{orig_prefix}{_ass_escape(chunk['original'])}")
+
+        text = "\\N".join(parts)
+        lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,0,,{text}")
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(header)
+        f.write('\n'.join(lines))
+        f.write('\n')
+
+    logger.info(f"Generated {len(chunks)} subtitle chunks to {output_path}")
+    return output_path
+
+
+def combine_audio_with_video(audio_path: str, video_path: str, subtitle_path: str = None):
+    # Combine new audio with original video, optionally burning in subtitles
+    if subtitle_path:
+        # Re-encode video to burn in ASS subtitles
+        command = [
+            'ffmpeg',
+            '-i', video_path,
+            '-i', audio_path,
+            '-vf', f"ass={subtitle_path}",
+            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:a', 'aac', '-b:a', '192k',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
+            '-y',
+            'temp/output_video.mp4'
+        ]
+    else:
+        command = [
+            'ffmpeg',
+            '-i', video_path,
+            '-i', audio_path,
+            '-c:v', 'copy',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-shortest',
+            '-y',
+            'temp/output_video.mp4'
+        ]
     logger.info("Combining audio with video using ffmpeg...")
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:

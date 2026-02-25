@@ -9,7 +9,7 @@ app = modal.App("dub-lite")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("ffmpeg", "git", "curl", "build-essential", "rubberband-cli")
+    .apt_install("ffmpeg", "git", "curl", "build-essential", "rubberband-cli", "fonts-noto", "fonts-noto-cjk", "libass-dev")
     .run_commands("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y")
     .env({"PATH": "/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin"})
     .pip_install("torch")          # Layer 1: just torch

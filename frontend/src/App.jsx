@@ -156,8 +156,8 @@ function App() {
 
   return (
     <div className="app">
-      <h1>Video Dubbing</h1>
-      <p className="tagline">Upload a video. Pick a language. We’ll dub it.</p>
+      <h1>Dub-Lite</h1>
+      <p className="tagline">Upload a video. Pick a target language. Sit back, and let it dub.</p>
 
       <form onSubmit={handleSubmit} className="form">
         <div className="section">
@@ -344,6 +344,12 @@ function App() {
         <button type="submit" className="submit" disabled={!canSubmit || uploading || jobStatus === 'pending'}>
           {uploading ? 'Uploading...' : jobStatus === 'pending' ? 'Processing...' : 'Start dubbing'}
         </button>
+
+        {(uploading || jobStatus === 'pending') && (
+          <p className="job-result-note job-result-note-inline">
+            This may take a few minutes. Feel free to do something else and check back later.
+          </p>
+        )}
       </form>
 
       {jobError && !jobId && (
@@ -357,7 +363,6 @@ function App() {
           <div className="status">
             {jobStatus === 'pending' && (
               <>
-                <p className="job-result-note">This may take a few minutes. Feel free to do something else and check back later.</p>
                 <p className="job-result-stage">{jobStage}</p>
                 <div className="progress-bar-wrap">
                   <div className="progress-bar" style={{ width: `${jobProgress}%` }} />

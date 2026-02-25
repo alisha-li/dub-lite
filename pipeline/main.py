@@ -35,6 +35,9 @@ from utils import (
     overlay_audios,
     combine_audio_with_video,
     tts_segment,
+    get_video_resolution,
+    create_subtitle_chunks,
+    generate_subtitles,
 )
 from log import setup_logging
 import logging
@@ -149,6 +152,10 @@ class YTDubPipeline:
 
         # List of sentence objects (sentence, start, end, speaker), sorted by start
         sentences = create_sentences(segments_with_speakers)
+        with open("temp/sentences.pkl", "wb") as f:
+            pickle.dump(sentences, f)
+        logger.info(f"Saved {len(sentences)} sentences")
+        
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 3. Translate and extract emotions
@@ -198,7 +205,13 @@ class YTDubPipeline:
         with open("temp/final_segments.pkl", "wb") as f:
             pickle.dump(final_segments, f)
         logger.info(f"Saved {len(final_segments)} segments to final_segments.pkl")
-        
+
+        # Generate dual subtitles (original + translation, with pinyin for Chinese)
+        video_width, video_height = get_video_resolution(video_path)
+        subtitle_chunks = create_subtitle_chunks(sentences, target_lang=targ)
+        subtitle_path = generate_subtitles(subtitle_chunks, video_width, video_height)
+        logger.info(f"Generated {len(subtitle_chunks)} subtitle chunks at {subtitle_path}")
+
         # Debug: Check segment translations
         logger.info("\n=== FINAL SEGMENTS CHECK ===")
         for i, seg in enumerate(final_segments):
@@ -279,8 +292,8 @@ class YTDubPipeline:
         # 7.2 Overlay dubbed speech and background sounds
         combined_audio_path = overlay_audios(dubbed_audio, background_audio)
 
-        # 7.3 Combine with Video
-        output_video_path = combine_audio_with_video(combined_audio_path, video_path)
+        # 7.3 Combine with Video (burn in subtitles)
+        output_video_path = combine_audio_with_video(combined_audio_path, video_path, subtitle_path)
         report("Done", 100)
         return output_video_path
 
@@ -296,10 +309,10 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="https://www.youtube.com/watch?v=aJwdWeiSc8c", 
+        src="temp/trimmed_ll.mp4", 
         targ="zh", 
-        gemini_api = os.getenv('GEMINI_API'),
-        gemini_model = os.getenv('GEMINI_MODEL'),
+        # gemini_api = os.getenv('GEMINI_API'),
+        # gemini_model = os.getenv('GEMINI_MODEL'),
         hf_token = os.getenv('HF_TOKEN'), 
         speakerTurnsPkl = False, 
         segmentsPkl = False, 
