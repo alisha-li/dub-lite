@@ -980,25 +980,23 @@ Style: Sub,Noto Sans,{trans_font_size},&H00FFFFFF,&H000000FF,&H00000000,&HA00000
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # Use separate Dialogue events per line so all render (libass can drop lines after \N in one event)
-    pinyin_prefix = f"{{\\fs{pinyin_font_size}\\b0}}"
-    orig_prefix = f"{{\\fs{orig_font_size}\\b0}}"
+    # One block per chunk: translation (top), pinyin, original (bottom)
+    pinyin_prefix = f"\\N{{\\fs{pinyin_font_size}\\b0}}"
+    orig_prefix = f"\\N{{\\fs{orig_font_size}\\b0}}"
 
     lines = []
     for chunk in chunks:
         start = _format_ass_time(chunk['start'])
         end = _format_ass_time(chunk['end'])
-        base_margin = margin_v
+        parts = []
         if chunk.get('translation'):
-            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{base_margin},,{_ass_escape(chunk['translation'])}")
+            parts.append(_ass_escape(chunk['translation']))
         if chunk.get('pinyin'):
-            margin_pinyin = base_margin + trans_font_size + 8
-            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{margin_pinyin},,{pinyin_prefix}{_ass_escape(chunk['pinyin'])}")
+            parts.append(f"{pinyin_prefix}{_ass_escape(chunk['pinyin'])}")
         if chunk.get('original'):
-            margin_orig = base_margin + trans_font_size + 8
-            if chunk.get('pinyin'):
-                margin_orig += pinyin_font_size + 6
-            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{margin_orig},,{orig_prefix}{_ass_escape(chunk['original'])}")
+            parts.append(f"{orig_prefix}{_ass_escape(chunk['original'])}")
+        text = "".join(parts)
+        lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{margin_v},,{text}")
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(header)

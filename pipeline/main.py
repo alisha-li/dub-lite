@@ -342,6 +342,6 @@ if __name__ == "__main__":
         mistral_api = os.getenv('MISTRAL_API_KEY'),
         speakerTurnsPkl = True, 
         segmentsPkl = True, 
-        finalSentencesPkl = False,
+        finalSentencesPkl = True,
     )
     logger.info(f"Dubbed video path: {result}")

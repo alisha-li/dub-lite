@@ -2,6 +2,25 @@
   width: 100%;
 }
 
+.github-corner {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: rgba(0, 0, 0, 0.55);
+  text-decoration: none;
+  z-index: 100;
+  transition: color 0.2s;
+}
+
+.github-corner:hover {
+  color: rgba(0, 0, 0, 0.85);
+}
+
 .app {
   width: 100%;
   max-width: 420px;
