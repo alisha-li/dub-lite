@@ -19,6 +19,7 @@ from TTS.api import TTS
 from audio_separator.separator import Separator
 import utils
 from speechbrain.inference.interfaces import foreign_class
+from mistralai import Mistral
 from utils import (
     download_video_and_extract_audio,
     diarize_audio,
@@ -26,6 +27,7 @@ from utils import (
     split_speakers_and_denoise,
     merge_close_segments,
     assign_speakers_to_segments,
+    mistral_segments_to_pipeline,
     create_sentences,
     classify_emotion,
     assign_sentences_to_segments,
@@ -37,6 +39,7 @@ from utils import (
     tts_segment,
     get_video_resolution,
     create_subtitle_chunks,
+    create_subtitle_chunks_from_segments,
     generate_subtitles,
 )
 from log import setup_logging
@@ -58,6 +61,7 @@ class YTDubPipeline:
             pyannote_key: str = None,
             gemini_api: str = None,
             groq_api: str = None,
+            mistral_api: str = None,
             groq_model: str = None,
             gemini_model: str = None,
             speakerTurnsPkl: bool = False,
@@ -118,32 +122,52 @@ class YTDubPipeline:
                 src_lang = data["language"]
                 
         else:
-            logger.info("Running Whisper Transcription...")
-            model = WhisperModel("large-v3", device=device.type, compute_type=compute_type)
-            segments, info = model.transcribe(
-                                        orig_audio_path,
-                                        task="transcribe",
-                                        word_timestamps=True,
-                                        compression_ratio_threshold=None,
-                                        log_prob_threshold=None,
-                                        no_speech_threshold=None,
-                                    )
-            segments = list(segments) 
-            src_lang = info.language
+            if not mistral_api:
+                raise ValueError("mistral_api is required for Mistral transcription")
+            logger.info("Running Mistral Transcription...")
+            client = Mistral(api_key=mistral_api)
+            with open(orig_audio_path, "rb") as f:
+                transcription_response = client.audio.transcriptions.complete(
+                    model="voxtral-mini-2602",
+                    file={
+                        "content": f,
+                        "file_name": os.path.basename(orig_audio_path),
+                    },
+                    diarize=True,
+                    timestamp_granularities=["segment"],
+                )
+            segments = mistral_segments_to_pipeline(transcription_response.segments)
+            src_lang = transcription_response.language or "en"
+            if not transcription_response.language:
+                logger.warning("Mistral did not detect language, defaulting to 'en'")
             logger.info(f"Transcription completed! Found {len(segments)} segments")
+            # logger.info("Running Whisper Transcription...")
+            # model = WhisperModel("large-v3", device=device.type, compute_type=compute_type)
+            # segments, info = model.transcribe(
+            #                             orig_audio_path,
+            #                             task="transcribe",
+            #                             vad_filter=True,
+            #                             word_timestamps=True,
+            #                             compression_ratio_threshold=None,
+            #                             log_prob_threshold=None,
+            #                             no_speech_threshold=None,
+            #                         )
+            # segments = list(segments) 
+            # src_lang = info.language
+            # logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:
                 pickle.dump({"segments": segments, "language": src_lang}, f)
         report("Transcription complete", 35)
 
-        segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
+        # segments_with_speakers = assign_speakers_to_segments(segments, speaker_turns)
         
-        # Save segments with speakers for inspection
-        with open("temp/segments_with_speakers.pkl", "wb") as f:
-            pickle.dump(segments_with_speakers, f)
-        logger.info(f"Saved {len(segments_with_speakers)} segments with speakers")
+        # # Save segments with speakers for inspection
+        # with open("temp/segments_with_speakers.pkl", "wb") as f:
+        #     pickle.dump(segments_with_speakers, f)
+        # logger.info(f"Saved {len(segments_with_speakers)} segments with speakers")
 
-        segments_with_speakers = merge_close_segments(segments_with_speakers)
-
+        # segments_with_speakers = merge_close_segments(segments_with_speakers)
+        segments_with_speakers = merge_close_segments(segments)
         # Save merged segments for inspection
         with open("temp/segments_merged.pkl", "wb") as f:
             pickle.dump(segments_with_speakers, f)
@@ -155,7 +179,7 @@ class YTDubPipeline:
         with open("temp/sentences.pkl", "wb") as f:
             pickle.dump(sentences, f)
         logger.info(f"Saved {len(sentences)} sentences")
-        
+
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 3. Translate and extract emotions
@@ -207,8 +231,9 @@ class YTDubPipeline:
         logger.info(f"Saved {len(final_segments)} segments to final_segments.pkl")
 
         # Generate dual subtitles (original + translation, with pinyin for Chinese)
+        # Use final_segments so subtitles align with when each dubbed segment plays
         video_width, video_height = get_video_resolution(video_path)
-        subtitle_chunks = create_subtitle_chunks(sentences, target_lang=targ)
+        subtitle_chunks = create_subtitle_chunks_from_segments(final_segments, target_lang=targ)
         subtitle_path = generate_subtitles(subtitle_chunks, video_width, video_height)
         logger.info(f"Generated {len(subtitle_chunks)} subtitle chunks at {subtitle_path}")
 
@@ -309,13 +334,14 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="temp/trimmed_ll.mp4", 
+        src="temp/trimmed_fastMile.mp4", 
         targ="zh", 
         # gemini_api = os.getenv('GEMINI_API'),
         # gemini_model = os.getenv('GEMINI_MODEL'),
         hf_token = os.getenv('HF_TOKEN'), 
-        speakerTurnsPkl = False, 
-        segmentsPkl = False, 
+        mistral_api = os.getenv('MISTRAL_API_KEY'),
+        speakerTurnsPkl = True, 
+        segmentsPkl = True, 
         finalSentencesPkl = False,
     )
     logger.info(f"Dubbed video path: {result}")

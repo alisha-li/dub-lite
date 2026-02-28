@@ -19,8 +19,14 @@ image = (
     .pip_install("pyannote-audio", "pyannote-pipeline")  # Layer 5
     .pip_install_from_requirements("requirements.txt")  # Layer 6: remaining
     .pip_install("audio-separator", "DeepFilterNet")  # Layer 7
+    .pip_install("wtpsplit")  # Layer 8
+    .pip_install("mistralai")  # Layer 9
+    .pip_install(
+        "vllm",
+        extra_index_url="https://wheels.vllm.ai/nightly",
+    )
     .run_commands("python3 -c \"import nltk; nltk.download('punkt_tab')\"")
-    .add_local_dir("pipeline", "/root/pipeline")
+    .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store"])
 )
 
 vol = modal.Volume.from_name("dub-lite-volume")
@@ -59,6 +65,7 @@ def run_dubbing_pipeline(
     groq_api: str = None,
     groq_model: str = None,
     gemini_model: str = None,
+    mistral_api: str = None,
     speakerTurnsPkl: bool = False,
     segmentsPkl: bool = False,
     finalSentencesPkl: bool = False,
@@ -90,6 +97,7 @@ def run_dubbing_pipeline(
             groq_api=groq_api,
             groq_model=groq_model,
             gemini_model=gemini_model,
+            mistral_api=mistral_api,
             speakerTurnsPkl=speakerTurnsPkl,
             segmentsPkl=segmentsPkl,
             finalSentencesPkl=finalSentencesPkl,

@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, File, UploadFile, Form, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 import uuid
@@ -111,6 +114,7 @@ async def create_job(
     pyannote_key: Optional[str] = Form(None),
     groq_api: Optional[str] = Form(None),
     groq_model: Optional[str] = Form(None),
+    mistral_api: Optional[str] = Form(None),
     hf_token: Optional[str] = Form(None)
 ):
     job_id = str(uuid.uuid4())
@@ -145,6 +149,8 @@ async def create_job(
         "created_at": datetime.now().isoformat(),
     }
 
+    mistral_api_val = (mistral_api or "").strip() or os.environ.get("MISTRAL_API_KEY")
+
     run_pipeline = modal.Function.from_name("dub-lite", "run_dubbing_pipeline")
     call = run_pipeline.spawn(
         job_id=job_id,
@@ -156,6 +162,7 @@ async def create_job(
         groq_api=groq_api,
         groq_model=groq_model,
         gemini_model=gemini_model,
+        mistral_api=mistral_api_val,
     )
 
     job_data["modal_call_id"] = call.object_id

@@ -23,6 +23,7 @@ video comparisons/
 wav2vec2_checkpoints/
 inspect_pickle.py
 inspect_segments_speakers.py
+pipeline/pkl_inspections/*.txt
 
 cookies.txt
 

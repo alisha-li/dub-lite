@@ -35,7 +35,7 @@ The following video demonstrates the complete dubbing workflow:
 - [ ] Add orig caption option
 
 ## Notes and Design Decisions
-
+- In multilingual videos (ones with multiple languages), has a tendency to repeat lines many times. Would only recommend videos with one language.
 - Translated sentences are mapped back to segments via word proportion. That is, if a segment had 25% of sentence A's words and 30% of sentence B's words, after the translation map back, that same segment would have 25% of translated sentence A's words and 30% of translated sentence B's words. An alternative to this is time proportion (i.e. trying to match 25% of sentence A's total audio time)
 - Whisper is better at recognizing speech than (even paid) pyannote is at diarizing it.
 - To install TTS → `pip install coqui-tts`

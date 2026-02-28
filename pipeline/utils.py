@@ -1,5 +1,6 @@
 # download_video_and_extract_audio
 import os
+import re
 import requests
 import yt_dlp
 from pydub import AudioSegment
@@ -19,9 +20,9 @@ import sys
 
 # create_sentences
 from collections import defaultdict
-from nltk.tokenize import sent_tokenize
+# from nltk.tokenize import sent_tokenize
 from wtpsplit import SaT
-import pysbd
+# import pysbd
 import logging
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 from groq import Groq
 from google import genai as gemini
 from transformers import MarianMTModel, MarianTokenizer
+from transformers import pipeline
 
 # classify_emotion
 from speechbrain.inference.interfaces import foreign_class
@@ -41,8 +43,52 @@ import numpy as np
 
 # combine_audio_with_background
 import subprocess
+from types import SimpleNamespace
 
 _helsinki_cache = {}
+_translategemma_cache = {}  # (model, processor) for text-only path
+
+
+def _normalize_speaker_to_pyannote(speaker_id: str) -> str:
+    """Convert Mistral speaker_id (e.g. speaker_1, SPEAKER_0) to PyAnnote format (SPEAKER_00, SPEAKER_01)."""
+    if not speaker_id:
+        return "SPEAKER_00"
+    m = re.search(r"(\d+)", str(speaker_id))
+    idx = int(m.group(1)) if m else 0
+    return f"SPEAKER_{idx:02d}"
+
+
+def mistral_segments_to_pipeline(mistral_segments):
+    """Convert Mistral TranscriptionSegmentChunk list to pipeline format.
+    Adds 'speaker' (from speaker_id, normalized to PyAnnote SPEAKER_00 format) and synthesized 'words'.
+    """
+    if not mistral_segments:
+        return []
+    result = []
+    for seg in mistral_segments:
+        text = getattr(seg, "text", None) or (seg.get("text", "") if isinstance(seg, dict) else "")
+        start = getattr(seg, "start", None)
+        if start is None and isinstance(seg, dict):
+            start = seg.get("start", 0)
+        end = getattr(seg, "end", None)
+        if end is None and isinstance(seg, dict):
+            end = seg.get("end", 0)
+        speaker_id = getattr(seg, "speaker_id", None)
+        if speaker_id is None and isinstance(seg, dict):
+            speaker_id = seg.get("speaker_id")
+        speaker = _normalize_speaker_to_pyannote(speaker_id)
+        words = [
+            SimpleNamespace(word=w, start=float(start), end=float(end))
+            for w in (text or "").split()
+        ]
+        result.append({
+            "text": text or "",
+            "start": float(start),
+            "end": float(end),
+            "speaker": speaker,
+            "words": words,
+        })
+    return result
 
 def download_video_and_extract_audio(
     source, 
@@ -324,6 +370,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
+        # sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
@@ -345,6 +392,16 @@ def create_sentences(segments_with_speakers: list):
     # Sort by start time
     sorted_sentences = sorted(all_sentences, key=lambda x: x['start'])
     return sorted_sentences
+
+LANG_CODE_TO_NAME = {
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "ru": "Russian",
+    "zh": "Chinese"
+}
 
 def translate(sentence, before_context, after_context, src: str, targ: str, groq_api: str = None, groq_model: str = "openai/gpt-oss-120b", gemini_api: str = None, gemini_model: str = "gemini-3-flash-preview"):
     import time
@@ -381,28 +438,84 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
         )
         return response.text
     else:
-        logger.info("Translating with Helsinki")
-        model_name = f"Helsinki-NLP/opus-mt-{src}-{targ}"
-        cache_key = (src, targ)
-        if cache_key not in _helsinki_cache:
-            _helsinki_cache[cache_key] = (
-                MarianTokenizer.from_pretrained(model_name),
-                MarianMTModel.from_pretrained(model_name).to('cpu'),
-            )
-        tokenizer, model = _helsinki_cache[cache_key]
+        # Direct init (bypasses pipeline image preprocessing bug with text-only input)
+        # https://huggingface.co/google/translategemma-4b-it
+        logger.info("Translating with TranslateGemma (direct init)")
+        from transformers import AutoModelForImageTextToText, AutoProcessor
 
-        def translate_chunk(text):
-            inputs = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=512).to('cpu')
-            out_ids = model.generate(**inputs, max_new_tokens=256)
-            return tokenizer.decode(out_ids[0], skip_special_tokens=True)
+        model_id = "google/translategemma-4b-it"
+        if "gemma" not in _translategemma_cache:
+            _device = "cuda" if torch.cuda.is_available() else ("mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu")
+            processor = AutoProcessor.from_pretrained(model_id)
+            model = AutoModelForImageTextToText.from_pretrained(model_id, torch_dtype=torch.bfloat16).to(_device)
+            _translategemma_cache["gemma"] = (model, processor, _device)
 
-        words = sentence.split()
-        if len(words) > 200:
-            parts = [" ".join(words[i:i+200]) for i in range(0, len(words), 200)]
-            outputs = [translate_chunk(p) for p in parts]
-            return " ".join(outputs)
-        else:
-            return translate_chunk(sentence)
+        model, processor, _device = _translategemma_cache["gemma"]
+        source_lang = LANG_CODE_TO_NAME.get(src, src)
+        target_lang = LANG_CODE_TO_NAME.get(targ, targ)
+
+        text = sentence
+# 
+# f"""You are a professional {source_lang} ({src}) to {target_lang} ({targ}) translator.
+# Your goal is to accurately convey the meaning and nuances of the original {source_lang} text while adhering to {target_lang} grammar, vocabulary, and cultural sensitivities.
+# Produce ONLY the {target_lang} translation of the <CURRENT> sentence, without any additional explanations or commentary.
+# Use the PREVIOUS and NEXT sentences only for context.
+
+# PREVIOUS:
+# {before_context}
+
+# CURRENT:
+# {sentence}
+
+# NEXT:
+# {after_context}"""
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "source_lang_code": src,
+                        "target_lang_code": targ,
+                        "text": text,
+                    }
+                ],
+            }
+        ]
+
+        inputs = processor.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True, return_dict=True, return_tensors="pt"
+        ).to(_device, dtype=torch.bfloat16)
+        input_len = inputs["input_ids"].shape[1]
+
+        with torch.inference_mode():
+            generation = model.generate(**inputs, max_new_tokens=200, do_sample=False)
+        generation = generation[0][input_len:]
+        return processor.decode(generation, skip_special_tokens=True)
+
+        # logger.info("Translating with Helsinki")
+        # model_name = f"Helsinki-NLP/opus-mt-{src}-{targ}"
+        # cache_key = (src, targ)
+        # if cache_key not in _helsinki_cache:
+        #     _helsinki_cache[cache_key] = (
+        #         MarianTokenizer.from_pretrained(model_name),
+        #         MarianMTModel.from_pretrained(model_name).to('cpu'),
+        #     )
+        # tokenizer, model = _helsinki_cache[cache_key]
+
+        # def translate_chunk(text):
+        #     inputs = tokenizer([text], return_tensors="pt", padding=True, truncation=True, max_length=512).to('cpu')
+        #     out_ids = model.generate(**inputs, max_new_tokens=256, )
+        #     return tokenizer.decode(out_ids[0], skip_special_tokens=True)
+
+        # words = sentence.split()
+        # if len(words) > 200:
+        #     parts = [" ".join(words[i:i+200]) for i in range(0, len(words), 200)]
+        #     outputs = [translate_chunk(p) for p in parts]
+        #     return " ".join(outputs)
+        # else:
+        #     return translate_chunk(sentence)
 
 def classify_emotion(audio_path: str, classifier: foreign_class):
     try:
@@ -722,12 +835,55 @@ def _add_pinyin(text):
         return None
 
 
-def create_subtitle_chunks(sentences, target_lang=None):
+def create_subtitle_chunks_from_segments(final_segments, target_lang=None):
+    """Build subtitle chunks directly from final segments.
+
+    One chunk per segment, using each segment's start/end and translation.
+    Aligns subtitles with when each dubbed segment actually plays.
+    """
+    MIN_DURATION = 0.3
+
+    raw_chunks = []
+    for seg in final_segments:
+        original = (seg.get('text') or '').strip()
+        translation = (seg.get('translation') or '').strip()
+        start = seg.get('start', 0)
+        end = seg.get('end', 0)
+
+        if not translation and not original:
+            continue
+        if end - start < 0.2:
+            continue
+
+        if end - start < MIN_DURATION:
+            end = start + MIN_DURATION
+
+        raw_chunks.append({
+            'start': start,
+            'end': end,
+            'original': original,
+            'translation': translation,
+        })
+
+    chunks = raw_chunks
+
+    if target_lang and target_lang.lower() in ('zh', 'zh-cn', 'zh-tw', 'chinese'):
+        for chunk in chunks:
+            if chunk['translation']:
+                pinyin = _add_pinyin(chunk['translation'])
+                if pinyin:
+                    chunk['pinyin'] = pinyin
+
+    return chunks
+
+
+def create_subtitle_chunks(sentences, segments=None, target_lang=None):
     """Convert sentences into subtitle display events.
 
-    One chunk per sentence. Each sentence has its own start/end time from
-    the original transcription, so subtitles track the natural speech rhythm.
-    Sentences have 'sentence' (original) and 'translation' fields.
+    One chunk per sentence. Uses segment boundaries for timing (avoids dependency
+    on word-level timestamps). If segments is provided, derives start/end from
+    the first/last segment each sentence spans; otherwise falls back to sent['start']/['end'].
+    Sentences have 'sentence' (original), 'translation', and 'segments' (list of (seg_idx, prop)).
     """
     MIN_DURATION = 1.0
 
@@ -735,8 +891,15 @@ def create_subtitle_chunks(sentences, target_lang=None):
     for sent in sentences:
         original = (sent.get('sentence') or '').strip()
         translation = (sent.get('translation') or '').strip()
-        start = sent['start']
-        end = sent['end']
+        seg_refs = sent.get('segments') or []
+        if segments and seg_refs:
+            first_idx = seg_refs[0][0]
+            last_idx = seg_refs[-1][0]
+            start = segments[first_idx]['start']
+            end = segments[last_idx]['end']
+        else:
+            start = sent.get('start', 0)
+            end = sent.get('end', 0)
 
         if not original or end - start < 0.2:
             continue
@@ -817,28 +980,25 @@ Style: Sub,Noto Sans,{trans_font_size},&H00FFFFFF,&H000000FF,&H00000000,&HA00000
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    # Inline ASS overrides for each line type
-    # Translation: bold, full white, large (base style already handles this)
-    # Pinyin: smaller, slightly transparent
-    # Original: smaller, slightly transparent, not bold
-    pinyin_prefix = f"{{\\fs{pinyin_font_size}\\b0\\1a&H40&}}"
-    orig_prefix = f"{{\\fs{orig_font_size}\\b0\\1a&H30&}}"
+    # Use separate Dialogue events per line so all render (libass can drop lines after \N in one event)
+    pinyin_prefix = f"{{\\fs{pinyin_font_size}\\b0}}"
+    orig_prefix = f"{{\\fs{orig_font_size}\\b0}}"
 
     lines = []
     for chunk in chunks:
         start = _format_ass_time(chunk['start'])
         end = _format_ass_time(chunk['end'])
-
-        # Build combined text: translation \N pinyin \N original
-        parts = []
+        base_margin = margin_v
         if chunk.get('translation'):
-            parts.append(_ass_escape(chunk['translation']))
+            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{base_margin},,{_ass_escape(chunk['translation'])}")
         if chunk.get('pinyin'):
-            parts.append(f"{pinyin_prefix}{_ass_escape(chunk['pinyin'])}")
-        parts.append(f"{orig_prefix}{_ass_escape(chunk['original'])}")
-
-        text = "\\N".join(parts)
-        lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,0,,{text}")
+            margin_pinyin = base_margin + trans_font_size + 8
+            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{margin_pinyin},,{pinyin_prefix}{_ass_escape(chunk['pinyin'])}")
+        if chunk.get('original'):
+            margin_orig = base_margin + trans_font_size + 8
+            if chunk.get('pinyin'):
+                margin_orig += pinyin_font_size + 6
+            lines.append(f"Dialogue: 0,{start},{end},Sub,,0,0,{margin_orig},,{orig_prefix}{_ass_escape(chunk['original'])}")
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(header)
@@ -986,29 +1146,39 @@ def split_text(text: str, max_chars: int = MAX_TTS_CHARS) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _tts_to_file_safe(tts, text: str, file_path: str, speaker_wav: str, language: str, emotion: str, speed: float = 1.0):
+    """Call tts.tts_to_file, falling back to silence on ZeroDivisionError (TTS bug when audio is 0-duration)."""
+    try:
+        tts.tts_to_file(text=text, file_path=file_path, speaker_wav=speaker_wav, language=language, emotion=emotion, speed=speed)
+    except ZeroDivisionError:
+        logger.warning(f"TTS produced 0-duration audio for text={repr(text[:50])}..., writing 100ms silence")
+        AudioSegment.silent(duration=100).export(file_path, format="wav")
+
+
 def tts_segment(tts, text: str, seg_index: int,
                        speaker_wav: str, language: str, emotion: str):
     """Synthesize a segment, splitting long text into chunks and concatenating."""
-    chunks = split_text(text)
+    text = (text or "").strip()
+    if not text:
+        AudioSegment.silent(duration=100).export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
+        return
+
+    chunks = [c for c in split_text(text) if c.strip()]
+    if not chunks:
+        AudioSegment.silent(duration=100).export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
+        return
+
     if len(chunks) == 1:
-        tts.tts_to_file(text=text,
-                        file_path=f"temp/audio_chunks/{seg_index}.wav",
-                        speaker_wav=speaker_wav,
-                        language=language,
-                        emotion=emotion,
-                        speed=1.0)
+        _tts_to_file_safe(tts, text, f"temp/audio_chunks/{seg_index}.wav", speaker_wav, language, emotion, 1.0)
         return
 
     logger.info(f"Segment {seg_index}: splitting into {len(chunks)} chunks")
     combined = AudioSegment.empty()
     for ci, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
         chunk_path = f"temp/audio_chunks/{seg_index}_part{ci}.wav"
-        tts.tts_to_file(text=chunk,
-                        file_path=chunk_path,
-                        speaker_wav=speaker_wav,
-                        language=language,
-                        emotion=emotion,
-                        speed=1.0)
+        _tts_to_file_safe(tts, chunk, chunk_path, speaker_wav, language, emotion, 1.0)
         combined += AudioSegment.from_file(chunk_path)
         os.remove(chunk_path)
     combined.export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
