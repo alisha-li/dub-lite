@@ -21,7 +21,7 @@ function App() {
   const [outputUrl, setOutputUrl] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const [translationProvider, setTranslationProvider] = useState('helsinki') // 'groq' | 'gemini' | 'helsinki'
+  const [translationProvider, setTranslationProvider] = useState('translategemma') // 'groq' | 'gemini' | 'translategemma'
   const [hfToken, setHfToken] = useState('')
   const [pyannoteKey, setPyannoteKey] = useState('')
   const [geminiApi, setGeminiApi] = useState('')
@@ -69,7 +69,7 @@ function App() {
         if (geminiApi.trim()) formData.append('gemini_api', geminiApi.trim())
         if (geminiModel.trim()) formData.append('gemini_model', geminiModel.trim())
       }
-      if (translationProvider === 'helsinki' && hfToken.trim()) formData.append('hf_token', hfToken.trim())
+      if (translationProvider === 'translategemma') formData.append('translation_provider', 'translategemma')
       if (pyannoteKey.trim()) formData.append('pyannote_key', pyannoteKey.trim())
 
       const res = await fetch(`${API_BASE}/api/jobs`, { method: 'POST', body: formData })
@@ -256,17 +256,17 @@ function App() {
                       checked={translationProvider === 'gemini'}
                       onChange={() => setTranslationProvider('gemini')}
                     />
-                    <span>Gemini - higher quality translations</span>
+                    <span>Gemini - highest quality translation</span>
                   </label>
                   <label className="provider-option">
                     <input
                       type="radio"
                       name="translationProvider"
-                      value="helsinki"
-                      checked={translationProvider === 'helsinki'}
-                      onChange={() => setTranslationProvider('helsinki')}
+                      value="translategemma"
+                      checked={translationProvider === 'translategemma'}
+                      onChange={() => setTranslationProvider('translategemma')}
                     />
-                    <span>Helsinki - free translations</span>
+                    <span>TranslateGemma - free translations</span>
                   </label>
                 </div>
               </div>
@@ -325,31 +325,11 @@ function App() {
                 </>
               )}
 
-              {translationProvider === 'helsinki' && (
+              {translationProvider === 'translategemma' && (
                 <div className="advanced-field">
-                  <label className="label">Hugging Face token</label>
-                  <input
-                    type="password"
-                    className="input url-input"
-                    value={hfToken}
-                    onChange={(e) => setHfToken(e.target.value)}
-                    placeholder="Required"
-                  />
-                  <p className="field-desc">Free speaker diarization and translation.</p>
+                  <p className="field-desc">Free translation powered by Google's TranslateGemma model. No API key required.</p>
                 </div>
               )}
-
-              <div className="advanced-field advanced-field--optional">
-                <label className="label">Pyannote API key (optional)</label>
-                <input
-                  type="password"
-                  className="input url-input"
-                  value={pyannoteKey}
-                  onChange={(e) => setPyannoteKey(e.target.value)}
-                  placeholder="Better diarization (paid)"
-                />
-                <p className="field-desc">Better diarization quality. Can be used with any translation option above.</p>
-              </div>
             </div>
           )}
         </div>
