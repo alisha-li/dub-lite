@@ -315,11 +315,11 @@ class YTDubPipeline:
         logger.info(f"background_audio length: {len(background_audio)}")
 
         # 12. Overlay dubbed speech with background
-        report("Overlaying audio", 94)
+        report("Combining speech and background audio", 94)
         combined_audio_path = overlay_audios(dubbed_audio, background_audio)
 
         # 13. Combine audio with video & burn subtitles
-        report("Encoding final video", 97)
+        report("Combining audio with video", 97)
         output_video_path = combine_audio_with_video(combined_audio_path, video_path, subtitle_path)
         report("Done", 100)
         return output_video_path
@@ -342,8 +342,8 @@ if __name__ == "__main__":
         # gemini_model = os.getenv('GEMINI_MODEL'),
         hf_token = os.getenv('HF_TOKEN'), 
         mistral_api = os.getenv('MISTRAL_API_KEY'),
-        speakerTurnsPkl = False, 
-        segmentsPkl = False, 
-        finalSentencesPkl = False,
+        speakerTurnsPkl = True, 
+        segmentsPkl = True, 
+        finalSentencesPkl = True,
     )
     logger.info(f"Dubbed video path: {result}")

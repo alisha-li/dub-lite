@@ -447,7 +447,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
-        sat.half().to("cuda")
+        # sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
@@ -1093,7 +1093,7 @@ def combine_audio_with_video(audio_path: str, video_path: str, subtitle_path: st
             '-i', video_path,
             '-i', audio_path,
             '-vf', f"ass={subtitle_path}",
-            '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
+            '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23',
             '-c:a', 'aac', '-b:a', '192k',
             '-map', '0:v:0',
             '-map', '1:a:0',
@@ -1147,7 +1147,7 @@ def calculate_silences(sentence_obj, idx, sentences, orig_audio_len):
         next_silence = (sentences[idx+1]['start'] * 1000) - (sentence_obj['end'] * 1000)
 
     usable_prev_silence = min(300, max(prev_silence, 0)) # don't start > 300ms before orig start
-    usable_next_silence = max(next_silence - 300, 0) # allocate 300ms for audio after
+    usable_next_silence = min(max(next_silence - 300,0), 1000) # no more than 1sec after or whatever's available in next segment silence
 
     return prev_silence, next_silence, usable_prev_silence, usable_next_silence
 
