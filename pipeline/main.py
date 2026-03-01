@@ -22,7 +22,8 @@ from speechbrain.inference.interfaces import foreign_class
 from mistralai import Mistral
 from utils import (
     download_video_and_extract_audio,
-    diarize_audio,
+    # diarize_audio,  # commented out – using Mistral for diarization
+    segments_to_speaker_turns,
     get_denoiser,
     split_speakers_and_denoise,
     merge_close_segments,
@@ -99,28 +100,58 @@ class YTDubPipeline:
 
         # 2. Speaker Diarization and Transcription
         report("Speaker diarization", 15)
+        segments_from_diarization = None  # (segments, src_lang) when we load/run in else to derive speaker_turns
         if speakerTurnsPkl:
             logger.info("Loading pyannote pickle...")
             with open("temp/speaker_turns.pkl", "rb") as f:
                 speaker_turns = pickle.load(f)
             logger.info(f"Loaded {len(speaker_turns)} speaker turns from file!")
         else:
-            speaker_turns = diarize_audio(orig_audio_path, pyannote_key, hf_token)
+            # speaker_turns = diarize_audio(orig_audio_path, pyannote_key, hf_token)  # commented out – using Mistral
+            if segmentsPkl:
+                logger.info("Loading segments pickle...")
+                with open("temp/segments.pkl", "rb") as f:
+                    data = pickle.load(f)
+                    segments_from_diarization = (data["segments"], data["language"])
+            else:
+                if not mistral_api:
+                    raise ValueError("mistral_api is required for Mistral transcription")
+                logger.info("Running Mistral Transcription (with diarization)...")
+                client = Mistral(api_key=mistral_api)
+                with open(orig_audio_path, "rb") as f:
+                    transcription_response = client.audio.transcriptions.complete(
+                        model="voxtral-mini-2602",
+                        file={
+                            "content": f,
+                            "file_name": os.path.basename(orig_audio_path),
+                        },
+                        diarize=True,
+                        timestamp_granularities=["segment"],
+                    )
+                segs = mistral_segments_to_pipeline(transcription_response.segments)
+                src = transcription_response.language or "en"
+                segments_from_diarization = (segs, src)
+                with open("temp/segments.pkl", "wb") as f:
+                    pickle.dump({"segments": segs, "language": src}, f)
+                logger.info(f"Transcription completed! Found {len(segs)} segments")
+            speaker_turns = segments_to_speaker_turns(segments_from_diarization[0])
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
         report("Diarization complete", 22)
-        
+
         # Extract speaker audios and denoise (for voice cloning later)
         split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
         report("Transcription", 25)
         # 2.2.2 Transcription
-        if segmentsPkl:
+        if segments_from_diarization is not None:
+            # Already loaded/ran in diarization else (Mistral path)
+            segments, src_lang = segments_from_diarization
+        elif segmentsPkl:
             logger.info("Loading segments pickle...")
             with open("temp/segments.pkl", "rb") as f:
                 data = pickle.load(f)
                 segments = data["segments"]
                 src_lang = data["language"]
-                
         else:
             if not mistral_api:
                 raise ValueError("mistral_api is required for Mistral transcription")
@@ -152,7 +183,7 @@ class YTDubPipeline:
             #                             log_prob_threshold=None,
             #                             no_speech_threshold=None,
             #                         )
-            # segments = list(segments) 
+            # segments = list(segments)
             # src_lang = info.language
             # logger.info(f"Transcription completed! Found {len(segments)} segments")
             with open("temp/segments.pkl", "wb") as f:

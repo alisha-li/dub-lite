@@ -16,21 +16,53 @@ image = (
     .pip_install("torchaudio", "torchvision")  # Layer 2
     .pip_install("transformers", "faster-whisper")  # Layer 3
     .pip_install("speechbrain", "coqui-tts")  # Layer 4
-    .pip_install("pyannote-audio", "pyannote-pipeline")  # Layer 5
+    # .pip_install("pyannote-audio", "pyannote-pipeline")  # Layer 5
     .pip_install_from_requirements("requirements.txt")  # Layer 6: remaining
     .pip_install("audio-separator", "DeepFilterNet")  # Layer 7
     .pip_install("wtpsplit")  # Layer 8
     .pip_install("mistralai")  # Layer 9
-    .pip_install(
-        "vllm",
-        extra_index_url="https://wheels.vllm.ai/nightly",
-    )
     .run_commands("python3 -c \"import nltk; nltk.download('punkt_tab')\"")
-    .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store"])
+    .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store"], copy=True)
+    .run_commands("python3 /root/pipeline/patch_torchaudio_backend.py")
 )
 
 vol = modal.Volume.from_name("dub-lite-volume")
 progress_dict = modal.Dict.from_name("dub-lite-progress", create_if_missing=True)
+
+
+@app.function(image=image, gpu="L4", memory=65536, volumes={"/models": vol})
+def debug_imports():
+    """Run: modal run pipeline/modal_pipeline.py::debug_imports"""
+    import os
+    import sys
+
+    os.environ["TORCH_HOME"] = "/models/torch"
+    os.environ["HF_HOME"] = "/models/huggingface"
+    os.environ["COQUI_TOS_AGREED"] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+    os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
+    sys.path.insert(0, "/root")
+    sys.path.insert(0, "/root/pipeline")
+
+    steps = [
+        ("torch", lambda: __import__("torch")),
+        ("torchaudio", lambda: __import__("torchaudio")),
+        ("transformers", lambda: __import__("transformers")),
+        ("faster_whisper", lambda: __import__("faster_whisper")),
+        ("TTS", lambda: __import__("TTS")),
+        # ("pyannote.audio", lambda: __import__("pyannote.audio")),  # commented out – using Mistral for diarization
+        ("df", lambda: __import__("df")),
+        ("pipeline.main", lambda: __import__("pipeline.main")),
+    ]
+    for name, fn in steps:
+        try:
+            fn()
+            print(f"OK: {name}", flush=True)
+        except Exception as e:
+            print(f"FAIL: {name} - {e}", flush=True)
+            raise
+    return "all ok"
+
 
 def _upload_to_spaces(local_path: str, job_id: str) -> str:
     """Upload the dubbed video to Spaces and return the object key."""
@@ -50,7 +82,8 @@ def _upload_to_spaces(local_path: str, job_id: str) -> str:
 
 @app.function(
     image=image,
-    gpu="T4",
+    gpu="A10G",
+    memory=65536,
     timeout = 3600,
     volumes = {"/models": vol},
     secrets=[modal.Secret.from_name("dub-env"), modal.Secret.from_name("dub-spaces")],
@@ -78,9 +111,15 @@ def run_dubbing_pipeline(
     os.environ["TORCH_HOME"] = "/models/torch"
     os.environ["HF_HOME"] = "/models/huggingface"
     os.environ["COQUI_TOS_AGREED"] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+    os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
     sys.path.append("/root")
     sys.path.append("/root/pipeline")
     from pipeline.main import YTDubPipeline
+
+    # read from dub-env secret if not passed
+    if not (mistral_api or "").strip():
+        mistral_api = (os.environ.get("MISTRAL_API_KEY") or "").strip() or None
 
     def report_progress(stage: str, percent: int):
         progress_dict[job_id] = {"stage": stage, "progress": percent}

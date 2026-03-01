@@ -8,8 +8,8 @@ from pydub import AudioSegment
 _YT_DLP_DOMAINS = ("youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "twitch.tv")
 
 # diarize_audio
-from pyannoteai.sdk import Client
-from pyannote.audio import Pipeline as PyannotePipeline
+# from pyannoteai.sdk import Client
+# from pyannote.audio import Pipeline as PyannotePipeline
 
 # denoise_audio
 from df import config
@@ -33,6 +33,44 @@ from transformers import MarianMTModel, MarianTokenizer
 from transformers import pipeline
 
 # classify_emotion
+# torchaudio 2.8+ removed list_audio_backends – stub for SpeechBrain
+# torchaudio 2.8+ removed info – stub for DeepFilterNet df.io.load_audio
+import torchaudio
+if not hasattr(torchaudio, "list_audio_backends"):
+    torchaudio.list_audio_backends = lambda: ["soundfile", "ffmpeg", "sox"]
+
+
+def _torchaudio_info_soundfile(path, **kwargs):
+    """Fallback for torchaudio.info (removed in 2.8). DeepFilterNet df.io needs it."""
+    from dataclasses import dataclass
+    import soundfile as sf
+    i = sf.info(path)
+    bps = 0
+    if i.subtype and "PCM" in i.subtype:
+        for n in (8, 16, 24, 32):
+            if str(n) in i.subtype:
+                bps = n
+                break
+
+    @dataclass
+    class AudioMetaData:
+        sample_rate: int
+        num_frames: int
+        num_channels: int
+        bits_per_sample: int
+        encoding: str
+
+    return AudioMetaData(
+        sample_rate=int(i.samplerate),
+        num_frames=int(i.frames),
+        num_channels=int(i.channels),
+        bits_per_sample=bps,
+        encoding=i.format or "PCM_S",
+    )
+
+
+if not hasattr(torchaudio, "info") or torchaudio.info is None:
+    torchaudio.info = _torchaudio_info_soundfile
 from speechbrain.inference.interfaces import foreign_class
 
 # adjust_audio
@@ -150,48 +188,58 @@ def download_video_and_extract_audio(
     return video_path, audio_path, orig_audio
 
 
-def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
-    if pyannote_key: # paid
-        client = Client(pyannote_key)
-        orig_audio_url = client.upload(audio_path)
-        diarization_job = client.diarize(orig_audio_url, transcription=True)
-        diarization = client.retrieve(diarization_job)
-
-        turns = diarization['output']['turnLevelTranscription']
-        speaker_turns = {}
-
-        for turn in turns:
-            start = turn['start']
-            end = turn['end']
-            speaker = turn['speaker']
-            
-            if abs(end - start) > 0.2:
-                speaker_turns[(start, end)] = speaker
-                logger.info(f"Speaker {speaker}: from {start}s to {end}s")
-
-    else:  #free
-        logger.info("Running speaker diarization (this may take several minutes)...")
-        diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=hf_token)
-        
-        if torch.cuda.is_available():
-            diarizationPipeline = diarizationPipeline.to(torch.device("cuda"))
-        
-        output = diarizationPipeline(audio_path)
-        speaker_turns = {}
-
-        for turn, speaker in output.speaker_diarization:
-            if abs(turn.end - turn.start) > .2:
-                logger.info(f"Speaker {speaker}: from {turn.start}s to {turn.end}s")
-                speaker_turns[(turn.start, turn.end)] = speaker
-    
-        # for speech_turn, _, speaker in diarization.itertracks(yield_label=True):
-        #     if abs(speech_turn.end - speech_turn.start) > .2:
-        #         logger.info(f"Speaker {speaker}: from {speech_turn.start}s to {speech_turn.end}s")
-        #         speaker_turns[(speech_turn.start, speech_turn.end)] = speaker
-        
-        logger.info("Diarization completed")
-    
+def segments_to_speaker_turns(segments: list) -> dict:
+    """Derive speaker turns from segments (e.g. Mistral) that have start, end, speaker.
+    Returns {(start, end): speaker} dict for split_speakers_and_denoise.
+    """
+    speaker_turns = {}
+    for seg in segments:
+        start = seg.get("start")
+        end = seg.get("end")
+        speaker = seg.get("speaker")
+        if start is not None and end is not None and speaker and abs(end - start) > 0.2:
+            speaker_turns[(float(start), float(end))] = speaker
     return speaker_turns
+
+
+# Pyannote diarization (commented out – use Mistral transcription with diarize=True instead)
+# def diarize_audio(audio_path: str, pyannote_key: str, hf_token: str):
+#     if pyannote_key: # paid
+#         client = Client(pyannote_key)
+#         orig_audio_url = client.upload(audio_path)
+#         diarization_job = client.diarize(orig_audio_url, transcription=True)
+#         diarization = client.retrieve(diarization_job)
+#
+#         turns = diarization['output']['turnLevelTranscription']
+#         speaker_turns = {}
+#
+#         for turn in turns:
+#             start = turn['start']
+#             end = turn['end']
+#             speaker = turn['speaker']
+#
+#             if abs(end - start) > 0.2:
+#                 speaker_turns[(start, end)] = speaker
+#                 logger.info(f"Speaker {speaker}: from {start}s to {end}s")
+#
+#     else:  #free
+#         logger.info("Running speaker diarization (this may take several minutes)...")
+#         diarizationPipeline = PyannotePipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=hf_token)
+#
+#         if torch.cuda.is_available():
+#             diarizationPipeline = diarizationPipeline.to(torch.device("cuda"))
+#
+#         output = diarizationPipeline(audio_path)
+#         speaker_turns = {}
+#
+#         for turn, speaker in output.speaker_diarization:
+#             if abs(turn.end - turn.start) > .2:
+#                 logger.info(f"Speaker {speaker}: from {turn.start}s to {turn.end}s")
+#                 speaker_turns[(turn.start, turn.end)] = speaker
+#
+#         logger.info("Diarization completed")
+#
+#     return speaker_turns
 
 
 def get_denoiser():
@@ -260,10 +308,19 @@ def denoise_audio(input_path: str, output_path: str = None, model=None, df=None)
     return True
 
 
+# Max speaker audio duration (seconds) to attempt denoising. Longer files can trigger
+# std::length_error in libsndfile/torchaudio when loading.
+MAX_DENOISE_DURATION_SEC = 300  # 5 minutes
+
+
 def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_dir: str = "temp/speakers_audio"):
     # For voice cloning later
     speakers = set(speaker_turns.values())
-    model, df = get_denoiser()
+    # Compute duration per speaker (seconds)
+    speaker_durations = {s: 0.0 for s in speakers}
+    for (start, end), spk in speaker_turns.items():
+        speaker_durations[spk] += float(end) - float(start)
+
     for speaker in speakers:
         speaker_audio = AudioSegment.empty()
         for key, value in speaker_turns.items():
@@ -271,11 +328,31 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
                 start = int(key[0])*1000  # Convert seconds to milliseconds
                 end = int(key[1])*1000
                 speaker_audio += audio[start:end]  # Extract this speaker's audio segments
-        speaker_audio.export(f"{output_dir}/{speaker}.wav", format="wav")
-        if denoise_audio(f"{output_dir}/{speaker}.wav", f"{output_dir}/{speaker}.wav", model, df):
-            logger.info("Using denoised audio for voice cloning")
-        else:
-            logger.info("Warning: Denoising failed, using original audio")
+        wav_path = f"{output_dir}/{speaker}.wav"
+        speaker_audio.export(wav_path, format="wav")
+
+        dur = speaker_durations[speaker]
+        if dur > MAX_DENOISE_DURATION_SEC:
+            logger.info("Skipping denoising for %s (%.1f min > %.1f min limit)", speaker, dur / 60, MAX_DENOISE_DURATION_SEC / 60)
+            continue
+
+        # Run denoise in subprocess to isolate C++ crashes (e.g. std::length_error in load_audio)
+        denoise_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "denoise_one.py")
+        try:
+            result = subprocess.run(
+                [sys.executable, denoise_script, wav_path, wav_path],
+                capture_output=True,
+                timeout=600,
+                cwd="/root" if os.path.exists("/root") else os.getcwd(),
+            )
+            if result.returncode == 0:
+                logger.info("Using denoised audio for voice cloning")
+            else:
+                logger.warning("Denoising failed (exit %d), using original audio", result.returncode)
+        except subprocess.TimeoutExpired:
+            logger.warning("Denoising timed out, using original audio")
+        except Exception as e:
+            logger.warning("Denoising failed: %s, using original audio", e)
     return output_dir
 
 
