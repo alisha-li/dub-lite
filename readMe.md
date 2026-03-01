@@ -2,7 +2,7 @@
 
 Free/BYOM (bring your own model) dubbing.
 
-**Motivation:** Designed for language learners who want to watch anything while staying immersed. Could also be used my content creators for quick distribution into global audiences. For best translations, use Gemini models, although this is significantly slower than Groq or free TranslateGemma.
+**Motivation:** Designed for language learners who want to watch anything while staying immersed. Could also be used by content creators for quick distribution to global audiences. For best translations, use Gemini models, although this is significantly slower than Groq or free TranslateGemma.
 
 Note, this is still a work in progress. Translation, diarization, etc. models are only so good at the moment, so I'm working on engineering around that, while making the processing quicker.
 
@@ -27,12 +27,9 @@ The following video demonstrates the complete dubbing workflow:
 ## To Do:
 
 - [ ] Fix audio timings after refactor
-- [ ] Look into whisper transcription for non-english languages (sometimes just silent)
-    - In that case, if pyannote picked something up, maybe just use pyannote
-- [ ] Set up hub where you can view or download all process videos
-- [ ] Add cleanup logics for some videos 
-- [ ] Allow video saves (so that users can dump a bunch of videos and come back later to view)
-- [ ] Add orig caption option
+- [ ] Preserve lyrics in music - need some music extraction preprocessing
+- [ ] Set up hub where you can view or download batches of video
+- [ ] Add cleanup logics for old videos
 
 ## Notes and Design Decisions
 - In multilingual videos (ones with multiple languages), has a tendency to repeat lines many times. Would only recommend videos with one language.

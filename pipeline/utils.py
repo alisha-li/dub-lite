@@ -447,7 +447,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
-        # sat.half().to("cuda")
+        sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
@@ -924,8 +924,8 @@ def create_subtitle_chunks_from_segments(final_segments, target_lang=None):
     for seg in final_segments:
         original = (seg.get('text') or '').strip()
         translation = (seg.get('translation') or '').strip()
-        start = seg.get('start', 0)
-        end = seg.get('end', 0)
+        start = seg.get('adj_start', seg.get('start', 0))
+        end = seg.get('adj_end', seg.get('end', 0))
 
         if not translation and not original:
             continue
