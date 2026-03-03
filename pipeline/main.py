@@ -282,7 +282,7 @@ class YTDubPipeline:
         # 8. Adjust audio timing
         report("Adjusting audio timing", 80)
         os.makedirs("temp/adjAudio_chunks", exist_ok=True)
-        adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=1.6, orig_audio_len=len(orig_audio))
+        adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=2, orig_audio_len=len(orig_audio))
 
         # 9. Generate subtitles (using adjusted audio durations)
         report("Generating subtitles", 84)
@@ -336,7 +336,7 @@ if __name__ == "__main__":
     # args = parser.parse_args()
     pipeline = YTDubPipeline()
     result = pipeline.dub( 
-        src="temp/trimmed_fastMile.mp4", 
+        src="temp/Orig-NYT.mp4", 
         targ="zh", 
         # gemini_api = os.getenv('GEMINI_API'),
         # gemini_model = os.getenv('GEMINI_MODEL'),
