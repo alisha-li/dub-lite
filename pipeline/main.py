@@ -98,7 +98,7 @@ class YTDubPipeline:
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
         report("Extracting audio", 7)
 
-        # 2. Transcription & diarization (Mistral does both in one call)
+        # 2. Transcription & diarization
         report("Transcribing & diarizing", 10)
         segments_from_diarization = None
         if speakerTurnsPkl:
@@ -106,6 +106,12 @@ class YTDubPipeline:
             with open("temp/speaker_turns.pkl", "rb") as f:
                 speaker_turns = pickle.load(f)
             logger.info(f"Loaded {len(speaker_turns)} speaker turns from file!")
+            # Also load segments so we don't re-transcribe in step 4
+            if os.path.exists("temp/segments.pkl"):
+                with open("temp/segments.pkl", "rb") as f:
+                    data = pickle.load(f)
+                    segments_from_diarization = (data["segments"], data["language"])
+                logger.info("Also loaded segments from pickle")
         else:
             if segmentsPkl:
                 logger.info("Loading segments pickle...")
@@ -133,6 +139,7 @@ class YTDubPipeline:
                 with open("temp/segments.pkl", "wb") as f:
                     pickle.dump({"segments": segs, "language": src}, f)
                 logger.info(f"Transcription completed! Found {len(segs)} segments")
+            
             speaker_turns = segments_to_speaker_turns(segments_from_diarization[0])
             with open("temp/speaker_turns.pkl", "wb") as f:
                 pickle.dump(speaker_turns, f)
@@ -145,36 +152,7 @@ class YTDubPipeline:
 
         # 4. Process transcription segments
         report("Processing segments", 26)
-        if segments_from_diarization is not None:
-            segments, src_lang = segments_from_diarization
-        elif segmentsPkl:
-            logger.info("Loading segments pickle...")
-            with open("temp/segments.pkl", "rb") as f:
-                data = pickle.load(f)
-                segments = data["segments"]
-                src_lang = data["language"]
-        else:
-            if not mistral_api:
-                raise ValueError("mistral_api is required for Mistral transcription")
-            logger.info("Running Mistral Transcription...")
-            client = Mistral(api_key=mistral_api)
-            with open(orig_audio_path, "rb") as f:
-                transcription_response = client.audio.transcriptions.complete(
-                    model="voxtral-mini-2602",
-                    file={
-                        "content": f,
-                        "file_name": os.path.basename(orig_audio_path),
-                    },
-                    diarize=True,
-                    timestamp_granularities=["segment"],
-                )
-            segments = mistral_segments_to_pipeline(transcription_response.segments)
-            src_lang = transcription_response.language or "en"
-            if not transcription_response.language:
-                logger.warning("Mistral did not detect language, defaulting to 'en'")
-            logger.info(f"Transcription completed! Found {len(segments)} segments")
-            with open("temp/segments.pkl", "wb") as f:
-                pickle.dump({"segments": segments, "language": src_lang}, f)
+        segments, src_lang = segments_from_diarization
 
         segments_with_speakers = merge_close_segments(segments)
         with open("temp/segments_merged.pkl", "wb") as f:
@@ -344,6 +322,6 @@ if __name__ == "__main__":
         mistral_api = os.getenv('MISTRAL_API_KEY'),
         speakerTurnsPkl = True, 
         segmentsPkl = True, 
-        finalSentencesPkl = True,
+        finalSentencesPkl = False,
     )
     logger.info(f"Dubbed video path: {result}")

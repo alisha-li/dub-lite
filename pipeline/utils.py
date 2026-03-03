@@ -346,9 +346,12 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
                 cwd="/root" if os.path.exists("/root") else os.getcwd(),
             )
             if result.returncode == 0:
-                logger.info("Using denoised audio for voice cloning")
+                logger.info("Using denoised audio for %s", speaker)
             else:
-                logger.warning("Denoising failed (exit %d), using original audio", result.returncode)
+                logger.warning("Denoising failed for %s (exit %d), using original audio.\nstderr: %s\nstdout: %s",
+                               speaker, result.returncode,
+                               result.stderr.decode(errors="replace")[:500],
+                               result.stdout.decode(errors="replace")[:500])
         except subprocess.TimeoutExpired:
             logger.warning("Denoising timed out, using original audio")
         except Exception as e:
@@ -447,7 +450,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
-        # sat.half().to("cuda")
+        #sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
