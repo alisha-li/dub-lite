@@ -24,7 +24,8 @@ The following video demonstrates the complete dubbing workflow:
 
 ---
 
-## Recommendations: Works better the less overlapping speakers and less background noise there is.
+## Recommendations: 
+Works better the less overlapping speakers and background noise there is.
 
 ---
 
