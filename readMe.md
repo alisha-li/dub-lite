@@ -25,7 +25,9 @@ The following video demonstrates the complete dubbing workflow:
 ---
 
 ## Recommendations: 
-Works better the less overlapping speakers and background noise there is. Use [yt-dlp](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#installation) to download videos from youtube or upload your own.
+Works better the less overlapping speakers and background noise there is.
+
+For YouTube downloads I recommend [yt-dlp](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#installation).
 
 ---
 
