@@ -367,3 +367,15 @@
   background: #535bf2;
 }
 
+.contact-line {
+  text-align: center;
+  color: #888;
+  font-size: 0.85rem;
+  margin-top: 2rem;
+}
+
+.contact-line a {
+  color: #888;
+  text-decoration: underline;
+}
+

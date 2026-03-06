@@ -170,7 +170,7 @@ function App() {
       </a>
       <div className="app">
       <h1>Dub-Lite</h1>
-      <p className="tagline">Upload a video. Pick a target language. Sit back, and let it dub.</p>
+      <p className="tagline">Upload a video, choose a target language, and get a dubbed version with subtitles.</p>
 
       <form onSubmit={handleSubmit} className="form">
         <div className="section">
@@ -392,6 +392,7 @@ function App() {
         </div>
       )}
     </div>
+    <p className="contact-line">Issues? Contact <a href="mailto:al138@wellesley.edu">al138@wellesley.edu</a></p>
     </>
   )
 }
