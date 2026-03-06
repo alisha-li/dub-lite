@@ -1,6 +1,6 @@
 # dub-lite
 
-Free / BYOM (bring your own model) dubbing. Designed for language learners who want to watch anything while staying immersed. Could also be used by content creators for quick distribution to global audiences. 
+Free / BYOM (bring your own model) dubbing, designed for language learners who want to watch anything while staying immersed. Could also be used by content creators for quick distribution to global audiences. 
 
 Note, this is still a work in progress. Translation, diarization, etc. models are only so good at the moment, so I'm working on engineering around that, while making the processing quicker. The pipeline itself is **completely free**! I only pay for the server and GPUs (for speed). You would only have to pay for the translation model if you preferred faster (Groq) or higher quality (Gemini) translations (default is [TranslateGemma](https://blog.google/innovation-and-ai/technology/developers-tools/translategemma/)).
 
