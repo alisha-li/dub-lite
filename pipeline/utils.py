@@ -180,9 +180,9 @@ def download_video_and_extract_audio(
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([source])
     
-    # Extract audio
+    # Extract audio (let ffmpeg auto-detect format instead of hardcoding mp4)
     print(f"Extracting audio to: {audio_path}")
-    orig_audio = AudioSegment.from_file(video_path, format="mp4")
+    orig_audio = AudioSegment.from_file(video_path)
     orig_audio.export(audio_path, format="wav")
     
     return video_path, audio_path, orig_audio
@@ -450,7 +450,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
-        #sat.half().to("cuda")
+        sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
@@ -1028,9 +1028,9 @@ def generate_subtitles(chunks, video_width, video_height, output_path="temp/subt
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     # Scale font sizes to video resolution
-    trans_font_size = max(16, int(video_height * 0.032))
-    orig_font_size = max(12, int(video_height * 0.022))
-    pinyin_font_size = max(10, int(video_height * 0.018))
+    trans_font_size = max(18, int(video_height * 0.038))
+    orig_font_size = max(14, int(video_height * 0.026))
+    pinyin_font_size = max(12, int(video_height * 0.022))
     margin_v = max(15, int(video_height * 0.025))
 
     # Single style — the base style handles the background box.

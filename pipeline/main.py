@@ -122,17 +122,22 @@ class YTDubPipeline:
                 if not mistral_api:
                     raise ValueError("mistral_api is required for Mistral transcription")
                 logger.info("Running Mistral Transcription (with diarization)...")
+                # Compress audio to MP3 for faster upload to Mistral API
+                mp3_path = orig_audio_path.replace(".wav", "_mistral.mp3")
+                orig_audio.export(mp3_path, format="mp3", bitrate="64k")
+                logger.info(f"Compressed audio for Mistral: {os.path.getsize(mp3_path) / 1024 / 1024:.1f} MB")
                 client = Mistral(api_key=mistral_api)
-                with open(orig_audio_path, "rb") as f:
+                with open(mp3_path, "rb") as f:
                     transcription_response = client.audio.transcriptions.complete(
                         model="voxtral-mini-2602",
                         file={
                             "content": f,
-                            "file_name": os.path.basename(orig_audio_path),
+                            "file_name": "audio.mp3",
                         },
                         diarize=True,
                         timestamp_granularities=["segment"],
                     )
+                os.remove(mp3_path)
                 segs = mistral_segments_to_pipeline(transcription_response.segments)
                 src = transcription_response.language or "en"
                 segments_from_diarization = (segs, src)
@@ -226,6 +231,7 @@ class YTDubPipeline:
         # 7. Text to Speech
         report("Generating speech", 60)
         os.makedirs("temp/audio_chunks", exist_ok=True)
+        os.makedirs("temp/emotions_audio", exist_ok=True)
         tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
@@ -238,7 +244,6 @@ class YTDubPipeline:
             if segment['speaker'] is None:
                 logger.warning(f"Segment {i} has no speaker, skipping")
                 continue
-            os.makedirs("temp/emotions_audio", exist_ok=True)
             start = segment['start']*1000
             end = segment['end']*1000
             orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")
