@@ -25,16 +25,15 @@ The following video demonstrates the complete dubbing workflow:
 ---
 
 ## Recommendations: 
-Works better the less overlapping speakers and background noise there is.
+Works better the less overlapping speakers and background noise there is. Use [yt-dlp](https://github.com/yt-dlp/yt-dlp?tab=readme-ov-file#installation) to download videos from youtube or upload your own.
 
 ---
 
 ## To Do:
 
-- [ ] Fix audio timings after refactor
 - [ ] Preserve lyrics in music - need some music extraction preprocessing
-- [ ] Set up hub where you can view or download batches of video
 - [ ] Add cleanup logics for old videos
+- [ ] Set up hub where you can view or download batches of video
 
 ## Notes and Design Decisions
 - In multilingual videos (ones with multiple languages), has a tendency to repeat lines many times. Would only recommend videos with one language.
@@ -42,4 +41,3 @@ Works better the less overlapping speakers and background noise there is.
 - Whisper is better at recognizing speech than (even paid) pyannote is at diarizing it.
 - To install TTS → `pip install coqui-tts`
 - Chose Modal since pricing is based on amount of time GPU is actually in use.
-- Goal process: I browse youtube for videos. Whenever I see an interesting video, I yt-dlp it into my downloads folder. I then mass upload a bunch of youtube videos to the site when I have the time, and the site will allow me to watch all these in the site. 
