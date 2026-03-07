@@ -82,7 +82,7 @@ class YTDubPipeline:
         cleanup_dirs = [
             "temp/speakers_audio",
             "temp/audio_chunks", 
-            "temp/adjAudio_chunks",
+            "temp/adj_audio_chunks",
             "temp/emotions_audio"
         ]
         for dir_path in cleanup_dirs:
@@ -264,14 +264,14 @@ class YTDubPipeline:
 
         # 8. Adjust audio timing
         report("Adjusting audio timing", 80)
-        os.makedirs("temp/adjAudio_chunks", exist_ok=True)
+        os.makedirs("temp/adj_audio_chunks", exist_ok=True)
         adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=2, orig_audio_len=len(orig_audio))
 
         # 9. Generate subtitles (using adjusted audio durations)
         report("Generating subtitles", 84)
         cursor = 0.0
         for i, seg in enumerate(final_segments):
-            adj_chunk = AudioSegment.from_wav(f"temp/adjAudio_chunks/{i}.wav")
+            adj_chunk = AudioSegment.from_wav(f"temp/adj_audio_chunks/{i}.wav")
             adj_dur = len(adj_chunk) / 1000.0
             # Use raw TTS duration to determine when speech actually ends
             raw_chunk = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")

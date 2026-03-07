@@ -706,9 +706,9 @@ def map_translated_sentences_to_segments(sentences: list, segments: list):
 def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
     """
     Adjusts translated segment audio to fit in roughly the same time slot of original segment
-    Returns: adjAudio
+    Returns: adj_audio
     """
-    curDuration = 0
+    elapsed_ms = 0
     for i, segment in enumerate(segments):
         print(f"Audio adjusting segment {i}")            
         audio = AudioSegment.from_wav(f"temp/audio_chunks/{i}.wav")
@@ -719,81 +719,81 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
 
         if orig_dur <= 0:
             print(f"Warning: Sentence {i} has zero/negative duration ({orig_dur}ms), skipping adjustment")
-            audio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
+            audio.export(f"temp/adj_audio_chunks/{i}.wav", format="wav")
             continue
         
-        drift_ms = max(0, curDuration - (segment['start'] * 1000)) #(how far behind schedule we are)
-        target_dur = max(usable_prev_silence + orig_dur + usable_next_silence - drift_ms, .01)
-        usable1_next_silence = min(usable_next_silence, 1000) # no more than 1sec after or whatever's available in next segment silence
-        target_dur_speech = max(usable_prev_silence + orig_dur + usable1_next_silence - drift_ms, .01)
+        drift_ms = max(0, elapsed_ms - (segment['start'] * 1000)) #(how far behind schedule we are)
+        target_slot_ms = max(usable_prev_silence + orig_dur + usable_next_silence - drift_ms, .01)
+        capped_next_silence = min(usable_next_silence, 1000) # no more than 1sec after or whatever's available in next segment silence
+        target_speech_ms = max(usable_prev_silence + orig_dur + capped_next_silence - drift_ms, .01)
 
-        logger.info(f"curDuration: {curDuration}")
+        logger.info(f"elapsed_ms: {elapsed_ms}")
         logger.info(f"segment start: {segment['start']}")
         logger.info(f"drift_ms: {drift_ms}")
         speed_factor = 1.0
 
         if (translated_dur == orig_dur and drift_ms == 0):
             # Exact match, just get to target duration
-            adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
+            adj_audio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=usable_next_silence)
     
-        elif (orig_dur < translated_dur <= target_dur_speech):
-            logger.info("orig_dur < translated_dur < target_dur_speech")
-            adjAudio = audio
+        elif (orig_dur < translated_dur <= target_speech_ms):
+            logger.info("orig_dur < translated_dur < target_speech_ms")
+            adj_audio = audio
             total_audio = usable_prev_silence + translated_dur
-            adjAudio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=target_dur_speech - total_audio)
+            adj_audio = AudioSegment.silent(duration=usable_prev_silence) + audio + AudioSegment.silent(duration=target_speech_ms - total_audio)
 
-        elif translated_dur > target_dur_speech:
-            logger.info("translated_dur >= target_dur_speech")
+        elif translated_dur > target_speech_ms:
+            logger.info("translated_dur >= target_speech_ms")
             # Need to speed up
-            speed_factor = translated_dur / target_dur_speech
+            speed_factor = translated_dur / target_speech_ms
             if speed_factor > MAX_SPEED:
                 speed_factor = MAX_SPEED
-            adjAudio = audio.speedup(playback_speed=speed_factor)
+            adj_audio = audio.speedup(playback_speed=speed_factor)
             
         elif translated_dur < orig_dur:
             logger.info("translated_dur < orig_dur")
 
             # Check if slowdown would be too extreme
-            natural_speed_factor = translated_dur / orig_dur
+            raw_speed_factor = translated_dur / orig_dur
 
-            if natural_speed_factor < 0.9:
+            if raw_speed_factor < 0.9:
                 # Add initial padding to avoid too much padding at the end
-                logger.info(f"Speed factor {natural_speed_factor:.2f}x < 0.9, adding initial padding")
+                logger.info(f"Speed factor {raw_speed_factor:.2f}x < 0.9, adding initial padding")
                 gap = orig_dur - translated_dur
                 initial_padding = min(300, gap)
 
-                adjAudio = AudioSegment.silent(duration=initial_padding) + audio
+                adj_audio = AudioSegment.silent(duration=initial_padding) + audio
                 
-                speed_factor = len(adjAudio) / orig_dur
+                speed_factor = len(adj_audio) / orig_dur
                 if speed_factor < MIN_SPEED:
                     speed_factor = MIN_SPEED
-                adjAudio = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
-                adjAudio = adjAudio + AudioSegment.silent(duration = orig_dur - len(adjAudio))
+                adj_audio = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
+                adj_audio = adj_audio + AudioSegment.silent(duration = orig_dur - len(adj_audio))
                 
             else:
-                logger.info(f"Speed factor {natural_speed_factor:.2f}x is acceptable, slowing normally")
-                speed_factor = natural_speed_factor
+                logger.info(f"Speed factor {raw_speed_factor:.2f}x is acceptable, slowing normally")
+                speed_factor = raw_speed_factor
                 if speed_factor < MIN_SPEED:
                     speed_factor = MIN_SPEED
-                adjAudio = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
+                adj_audio = stretch_audio(f"temp/audio_chunks/{i}.wav", speed_factor)
             
-            adjAudio = AudioSegment.silent(duration=usable_prev_silence) + adjAudio + AudioSegment.silent(duration=usable1_next_silence)
+            adj_audio = AudioSegment.silent(duration=usable_prev_silence) + adj_audio + AudioSegment.silent(duration=capped_next_silence)
         
-        adjAudio = adjAudio + AudioSegment.silent(duration = target_dur - len(adjAudio))
+        adj_audio = adj_audio + AudioSegment.silent(duration = target_slot_ms - len(adj_audio))
         
         if i == 0:
-            adjAudio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adjAudio
+            adj_audio = AudioSegment.silent(duration = prev_silence-usable_prev_silence) + adj_audio
         elif i == len(segments) - 1:
-            adjAudio = adjAudio + AudioSegment.silent(duration = next_silence-usable_next_silence)
-        adjAudio.export(f"temp/adjAudio_chunks/{i}.wav", format="wav")
+            adj_audio = adj_audio + AudioSegment.silent(duration = next_silence-usable_next_silence)
+        adj_audio.export(f"temp/adj_audio_chunks/{i}.wav", format="wav")
 
         # TODO:
             # if next segment is longer than orig_dur, dont slow down as much. This is more complicated
             # since the usable_prev_silence would be dynamic.
         logger.info(f"SEGMENT {i} AUDIO ADJUSTMENT DETAILS:")
         logger.info(f"speed factor: {speed_factor}")
-        logger.info(f"target dur: {target_dur}")
-        logger.info(f"adjusted audio dur: {len(adjAudio)}")
+        logger.info(f"target dur: {target_slot_ms}")
+        logger.info(f"adjusted audio dur: {len(adj_audio)}")
         logger.info(f"usable_prev_silence: {usable_prev_silence}")
         logger.info(f"usable_next_silence: {usable_next_silence}")
         logger.info(f"next_silence: {next_silence}")
@@ -802,16 +802,16 @@ def adjust_audio(segments, MIN_SPEED, MAX_SPEED, orig_audio_len):
         logger.info(f"translated duration: {translated_dur}")
         logger.info("-"*80)
 
-        curDuration += len(adjAudio)
+        elapsed_ms += len(adj_audio)
 
 
 def stitch_chunks(segments):
     logger.info("Stitching chunks together")
     final_audio = AudioSegment.empty()
     for i in range(len(segments)):
-        adjAudio = AudioSegment.from_wav(f"temp/adjAudio_chunks/{i}.wav")
-        final_audio += adjAudio
-        logger.info(f"Added chunk {i} ({len(adjAudio)}ms), total so far: {len(final_audio)}ms")
+        adj_audio = AudioSegment.from_wav(f"temp/adj_audio_chunks/{i}.wav")
+        final_audio += adj_audio
+        logger.info(f"Added chunk {i} ({len(adj_audio)}ms), total so far: {len(final_audio)}ms")
 
     final_audio.export(f"temp/final_audio.wav", format="wav")
     logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
