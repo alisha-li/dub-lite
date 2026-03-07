@@ -662,44 +662,54 @@ def assign_sentences_to_segments(sorted_sentences: list, segments_with_speakers:
 
 def map_translated_sentences_to_segments(sentences: list, segments: list):
     """
-    Maps translated sentences to segments based on word proportion.
-    Returns: segments with translated text
+    Maps translated sentences AND original text to segments based on word proportion.
+    Both 'text' and 'translation' are rebuilt from sentences so they stay in sync.
+    Returns: segments with translated text and aligned original text
     """
     for i, segment in enumerate(segments):
         segment['translation'] = []
+        segment['orig'] = []
 
     for i, sentence_obj in enumerate(sentences):
         translation_text = sentence_obj.get('translation') or ""
-        
+        original_text = sentence_obj.get('sentence') or ""
+
         # For languages without spaces (Chinese, Japanese), split by characters
         # For languages with spaces (English, Spanish), split by words
         if translation_text and ' ' in translation_text and len(translation_text.split()) > 1:
-            # Has spaces - split by words
-            words = translation_text.split()
-            join_with = " "
+            trans_words = translation_text.split()
+            trans_join = " "
         else:
-            # No spaces or single word - split by characters
-            words = list(translation_text)
-            join_with = ""
-        
-        total_words = len(words)
-        word_idx = 0
+            trans_words = list(translation_text)
+            trans_join = ""
+
+        orig_words = original_text.split()
+        orig_join = " "
+
+        total_trans = len(trans_words)
+        total_orig = len(orig_words)
+        trans_idx = 0
+        orig_idx = 0
 
         for j, (i_seg_global, prop) in enumerate(sentence_obj['segments']):
             if j == len(sentence_obj['segments'])-1:
-                num_words = total_words - word_idx # last segment gets remaining words of sentence
+                n_trans = total_trans - trans_idx
+                n_orig = total_orig - orig_idx
             else:
-                num_words = round(total_words*prop)
-            segment_words = words[word_idx:word_idx + num_words]
-            segments[i_seg_global]['translation'].append(join_with.join(segment_words))
-            word_idx += num_words
-        
-        # will delete in cleanup
+                n_trans = round(total_trans * prop)
+                n_orig = round(total_orig * prop)
+
+            segments[i_seg_global]['translation'].append(trans_join.join(trans_words[trans_idx:trans_idx + n_trans]))
+            segments[i_seg_global]['orig'].append(orig_join.join(orig_words[orig_idx:orig_idx + n_orig]))
+            trans_idx += n_trans
+            orig_idx += n_orig
+
         if not sentence_obj['segments']:
             logger.warning(f"Sentence {i} has no segments: {sentence_obj['sentence']}")
 
     for segment in segments:
         segment['translation'] = " ".join(segment['translation'])
+        segment['orig'] = " ".join(segment['orig'])
     return segments
 
 
@@ -887,7 +897,7 @@ def create_subtitle_chunks_from_segments(final_segments, target_lang=None, max_c
 
     raw_chunks = []
     for seg in final_segments:
-        original = (seg.get('text') or '').strip()
+        original = (seg.get('orig') or seg.get('text') or '').strip()
         translation = (seg.get('translation') or '').strip()
         start = seg.get('adj_start', seg.get('start', 0))
         end = seg.get('adj_end', seg.get('end', 0))
@@ -1129,7 +1139,11 @@ def calculate_silences(sentence_obj, idx, sentences, orig_audio_len):
     Calculate available silence before/after a sentence.
     Returns: prev_silence, next_silence, usable_prev_silence, usable_next_silence
     """
-    if idx == 0:
+    if idx == 0 and idx == len(sentences) - 1:
+        # Only one segment
+        prev_silence = sentence_obj['start'] * 1000
+        next_silence = orig_audio_len - sentence_obj['end'] * 1000
+    elif idx == 0:
         prev_silence = sentence_obj['start'] * 1000
         next_silence = (sentences[idx+1]['start'] * 1000) - (sentence_obj['end'] * 1000)
     elif idx == len(sentences) - 1:
