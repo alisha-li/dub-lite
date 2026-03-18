@@ -19,8 +19,7 @@ image = (
     # .pip_install("pyannote-audio", "pyannote-pipeline")  # Layer 5
     .pip_install_from_requirements("requirements.txt")  # Layer 6: remaining
     .pip_install("audio-separator", "DeepFilterNet")  # Layer 7
-    .pip_install("wtpsplit")  # Layer 8
-    .pip_install("mistralai")  # Layer 9
+    .pip_install("wtpsplit", "pycryptodome")  # Layer 8
     .run_commands("python3 -c \"import nltk; nltk.download('punkt_tab')\"")
     .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store", "CosyVoice", "pretrained_models"], copy=True)
     .add_local_dir("pipeline/CosyVoice", "/root/CosyVoice", ignore=[".DS_Store", "**/.DS_Store", ".git", "pretrained_models", "asset", "examples", "**/requirements.txt"], copy=True)
@@ -34,6 +33,7 @@ image = (
         "hydra-colorlog", "hydra-optuna-sweeper",
     )
     .run_commands("pip install 'setuptools<78' && pip install --no-build-isolation --no-deps openai-whisper==20231117 && pip install tiktoken")
+    .run_commands("pip install --force-reinstall 'mistralai==1.12.4'")  # force correct version
     .run_commands("python3 /root/pipeline/patch_torchaudio_backend.py")
 )
 
@@ -240,6 +240,8 @@ def run_dubbing_pipeline(
             tts_engine=tts_engine,
             cosyvoice_model_dir=cosyvoice_model_dir,
             progress_callback=report_progress,
+            tts_worker_fn=tts_worker,
+            num_tts_workers=NUM_TTS_WORKERS,
         )
         report_progress("Uploading to Spaces...", 95)
         output_key = _upload_to_spaces(output_path, job_id)

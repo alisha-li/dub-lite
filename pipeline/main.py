@@ -239,24 +239,15 @@ class YTDubPipeline:
         os.makedirs("temp/audio_chunks", exist_ok=True)
         os.makedirs("temp/emotions_audio", exist_ok=True)
 
-        use_cosyvoice = tts_engine == "cosyvoice"
-        if use_cosyvoice:
-            logger.info("Using CosyVoice TTS engine")
-            cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
-        else:
-            logger.info("Using XTTS TTS engine")
-            tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
-
+        # 7a. Classify emotions for all segments (fast, runs locally)
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
                                    pymodule_file="custom_interface.py",
                                    classname="CustomEncoderWav2vec2Classifier",
                                    run_opts={"device": device.type})
         for i, segment in enumerate(final_segments):
-            if n_segments > 0:
-                report("Generating speech", 60 + int(18 * (i + 1) / n_segments))
             if segment['speaker'] is None:
-                logger.warning(f"Segment {i} has no speaker, skipping")
+                segment['emotion'] = 'neutral'
                 continue
             start = segment['start']*1000
             end = segment['end']*1000
@@ -264,22 +255,103 @@ class YTDubPipeline:
             segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav", classifier)
             os.remove("temp/emotions_audio/emotions.wav")
 
-            logger.info(f"TTS-ing segment {i}")
+        # 7b. Generate TTS — parallel workers or local
+        if tts_worker_fn is not None:
+            # --- Parallel TTS across multiple GPU containers ---
+            logger.info(f"Using {num_tts_workers} parallel TTS workers")
 
-            if not segment['translation'] or segment['translation'].strip() == "":
-                logger.warning(f"Segment {i} has empty translation, generating silence")
-                dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
-                AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
-                continue
+            # Read speaker WAV files into memory so we can send them to workers
+            speaker_ids = set(seg['speaker'] for seg in final_segments if seg['speaker'] is not None)
+            speaker_wavs = {}
+            for spk in speaker_ids:
+                spk_path = f"temp/speakers_audio/{spk}.wav"
+                if os.path.exists(spk_path):
+                    with open(spk_path, "rb") as f:
+                        speaker_wavs[spk] = f.read()
 
+            # Build segment data for workers
+            tts_segments = []
+            for i, segment in enumerate(final_segments):
+                if segment['speaker'] is None:
+                    # Write silence locally for speakerless segments
+                    dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
+                    AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
+                    continue
+                tts_segments.append({
+                    "index": i,
+                    "text": segment.get('translation', ''),
+                    "emotion": segment.get('emotion', 'neutral'),
+                    "speaker": segment['speaker'],
+                    "start": segment['start'],
+                    "end": segment['end'],
+                })
+
+            # Dynamically choose worker count: at least 5 segments per worker
+            MIN_SEGMENTS_PER_WORKER = 5
+            actual_workers = max(1, min(num_tts_workers, len(tts_segments) // MIN_SEGMENTS_PER_WORKER))
+            logger.info(f"{len(tts_segments)} segments → {actual_workers} TTS workers")
+
+            # Split segments into batches, one per worker
+            batches = [[] for _ in range(actual_workers)]
+            for idx, seg_data in enumerate(tts_segments):
+                batches[idx % actual_workers].append(seg_data)
+            # Remove empty batches
+            batches = [b for b in batches if b]
+
+            batch_inputs = []
+            for batch in batches:
+                # Only include speaker WAVs needed by this batch
+                batch_speakers = set(s["speaker"] for s in batch)
+                batch_inputs.append({
+                    "segments": batch,
+                    "speaker_wavs": {spk: speaker_wavs[spk] for spk in batch_speakers if spk in speaker_wavs},
+                    "targ": targ,
+                    "tts_engine": tts_engine,
+                    "cosyvoice_model_dir": cosyvoice_model_dir,
+                })
+
+            # Fan out to parallel containers and collect results
+            report("Generating speech (parallel)", 62)
+            for result_idx, result in enumerate(tts_worker_fn.map(batch_inputs)):
+                report("Generating speech (parallel)", 62 + int(16 * (result_idx + 1) / len(batch_inputs)))
+                for seg_idx_str, wav_bytes in result["wavs"].items():
+                    with open(f"temp/audio_chunks/{seg_idx_str}.wav", "wb") as f:
+                        f.write(wav_bytes)
+            logger.info("Parallel TTS complete")
+
+        else:
+            # --- Local single-GPU TTS (original path) ---
+            use_cosyvoice = tts_engine == "cosyvoice"
             if use_cosyvoice:
-                tts_segment_cosyvoice(cosyvoice_model, segment['translation'], i,
-                                       f"temp/speakers_audio/{segment['speaker']}.wav",
-                                       segment['emotion'])
+                logger.info("Using CosyVoice TTS engine")
+                cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
             else:
-                tts_segment(tts, segment['translation'], i,
-                            f"temp/speakers_audio/{segment['speaker']}.wav",
-                            targ, segment['emotion'])
+                logger.info("Using XTTS TTS engine")
+                tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+
+            for i, segment in enumerate(final_segments):
+                if n_segments > 0:
+                    report("Generating speech", 60 + int(18 * (i + 1) / n_segments))
+                if segment['speaker'] is None:
+                    logger.warning(f"Segment {i} has no speaker, skipping")
+                    continue
+
+                logger.info(f"TTS-ing segment {i}")
+
+                if not segment['translation'] or segment['translation'].strip() == "":
+                    logger.warning(f"Segment {i} has empty translation, generating silence")
+                    dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
+                    AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
+                    continue
+
+                if use_cosyvoice:
+                    tts_segment_cosyvoice(cosyvoice_model, segment['translation'], i,
+                                           f"temp/speakers_audio/{segment['speaker']}.wav",
+                                           segment['emotion'])
+                else:
+                    tts_segment(tts, segment['translation'], i,
+                                f"temp/speakers_audio/{segment['speaker']}.wav",
+                                targ, segment['emotion'])
 
         # 8. Adjust audio timing
         report("Adjusting audio timing", 80)
