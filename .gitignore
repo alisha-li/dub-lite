@@ -27,6 +27,9 @@ pipeline/pkl_inspections/*.txt
 
 cookies.txt
 
+pipeline/CosyVoice/
+pipeline/pretrained_models/
+
 .cursor/
 
 # # Frontend (if i want to have all gitignores in one place)

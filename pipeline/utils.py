@@ -450,7 +450,7 @@ def create_sentences(segments_with_speakers: list):
         # sentences = seg.segment(fullTextStr)
 
         sat = SaT("sat-12l-sm")
-        sat.half().to("cuda")
+        # sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
@@ -827,6 +827,14 @@ def stitch_chunks(segments):
     logger.info(f"Final audio length: {len(final_audio)}ms ({len(final_audio)/1000:.2f}s)")
 
 def overlay_audios(audio1, audio2):
+    # Ensure both audios have the same sample rate and channels before overlaying
+    target_rate = max(audio1.frame_rate, audio2.frame_rate)
+    target_channels = max(audio1.channels, audio2.channels)
+    if audio1.frame_rate != target_rate or audio1.channels != target_channels:
+        audio1 = audio1.set_frame_rate(target_rate).set_channels(target_channels)
+    if audio2.frame_rate != target_rate or audio2.channels != target_channels:
+        audio2 = audio2.set_frame_rate(target_rate).set_channels(target_channels)
+
     if len(audio1) > len(audio2):
         audio2 = audio2 + AudioSegment.silent(duration=len(audio1) - len(audio2))
     elif len(audio1) < len(audio2):
@@ -1238,20 +1246,21 @@ def _tts_to_file_safe(tts, text: str, file_path: str, speaker_wav: str, language
 
 
 def tts_segment(tts, text: str, seg_index: int,
-                       speaker_wav: str, language: str, emotion: str):
+                       speaker_wav: str, language: str, emotion: str,
+                       output_dir: str = "temp/audio_chunks"):
     """Synthesize a segment, splitting long text into chunks and concatenating."""
     text = (text or "").strip()
     if not text:
-        AudioSegment.silent(duration=100).export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
+        AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return
 
     chunks = [c for c in split_text(text) if c.strip()]
     if not chunks:
-        AudioSegment.silent(duration=100).export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
+        AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return
 
     if len(chunks) == 1:
-        _tts_to_file_safe(tts, text, f"temp/audio_chunks/{seg_index}.wav", speaker_wav, language, emotion, 1.0)
+        _tts_to_file_safe(tts, text, f"{output_dir}/{seg_index}.wav", speaker_wav, language, emotion, 1.0)
         return
 
     logger.info(f"Segment {seg_index}: splitting into {len(chunks)} chunks")
@@ -1259,8 +1268,108 @@ def tts_segment(tts, text: str, seg_index: int,
     for ci, chunk in enumerate(chunks):
         if not chunk.strip():
             continue
-        chunk_path = f"temp/audio_chunks/{seg_index}_part{ci}.wav"
+        chunk_path = f"{output_dir}/{seg_index}_part{ci}.wav"
         _tts_to_file_safe(tts, chunk, chunk_path, speaker_wav, language, emotion, 1.0)
         combined += AudioSegment.from_file(chunk_path)
         os.remove(chunk_path)
-    combined.export(f"temp/audio_chunks/{seg_index}.wav", format="wav")
+    combined.export(f"{output_dir}/{seg_index}.wav", format="wav")
+
+
+# ---------------------------------------------------------------------------
+# CosyVoice TTS alternative
+# ---------------------------------------------------------------------------
+
+# Map SpeechBrain emotion labels to CosyVoice instruct prompts
+_COSYVOICE_EMOTION_INSTRUCTIONS = {
+    "angry":   "Please speak in an angry tone.",
+    "happy":   "Please speak in a happy and cheerful tone.",
+    "sad":     "Please speak in a sad and melancholic tone.",
+    "neutral": "Please speak in a calm and neutral tone.",
+    "fear":    "Please speak in a fearful and anxious tone.",
+    "disgust": "Please speak in a disgusted tone.",
+    "surprise":"Please speak in a surprised tone.",
+}
+
+
+def load_cosyvoice(model_dir: str = "pretrained_models/Fun-CosyVoice3-0.5B"):
+    """Load the CosyVoice model. Returns the AutoModel instance."""
+    import sys
+    sys.path.append('CosyVoice')                                               
+    sys.path.append('CosyVoice/third_party/Matcha-TTS')
+    from cosyvoice.cli.cosyvoice import AutoModel
+    model = AutoModel(model_dir=model_dir)
+    logger.info(f"CosyVoice model loaded from {model_dir}")
+    return model
+
+
+def _trim_speaker_wav(speaker_wav: str, max_seconds: int = 25) -> str:
+    """Trim speaker reference audio to max_seconds so CosyVoice accepts it (30s limit).
+    Returns path to trimmed file (or original if already short enough)."""
+    audio = AudioSegment.from_file(speaker_wav)
+    max_ms = max_seconds * 1000
+    if len(audio) <= max_ms:
+        return speaker_wav
+    trimmed = audio[:max_ms]
+    trimmed_path = speaker_wav.replace(".wav", "_trimmed.wav")
+    trimmed.export(trimmed_path, format="wav")
+    return trimmed_path
+
+
+def _cosyvoice_tts_to_file(cosyvoice_model, text: str, file_path: str,
+                            speaker_wav: str, emotion: str):
+    """Generate speech with CosyVoice using cross-lingual voice cloning."""
+    import torchaudio
+
+    # CosyVoice rejects reference audio longer than 30s
+    speaker_wav = _trim_speaker_wav(speaker_wav)
+
+    generated = False
+    try:
+        # CosyVoice3 requires <|endofprompt|> in the text
+        cv_text = f"You are a helpful assistant.<|endofprompt|>{text}"
+        for _i, result in enumerate(cosyvoice_model.inference_cross_lingual(
+            cv_text,
+            speaker_wav,
+            stream=False,
+        )):
+            torchaudio.save(file_path, result['tts_speech'], cosyvoice_model.sample_rate)
+            generated = True
+            break
+    except Exception as e:
+        logger.warning(f"CosyVoice cross_lingual failed: {e}, writing silence")
+
+    if not generated:
+        AudioSegment.silent(duration=100).export(file_path, format="wav")
+
+
+def tts_segment_cosyvoice(cosyvoice_model, text: str, seg_index: int,
+                           speaker_wav: str, emotion: str,
+                           output_dir: str = "temp/audio_chunks"):
+    """CosyVoice version of tts_segment. Drop-in alternative."""
+    text = (text or "").strip()
+    if not text:
+        AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
+        return
+
+    chunks = [c for c in split_text(text) if c.strip()]
+    if not chunks:
+        AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
+        return
+
+    if len(chunks) == 1:
+        _cosyvoice_tts_to_file(cosyvoice_model, text,
+                                f"{output_dir}/{seg_index}.wav",
+                                speaker_wav, emotion)
+        return
+
+    logger.info(f"Segment {seg_index}: splitting into {len(chunks)} CosyVoice chunks")
+    combined = AudioSegment.empty()
+    for ci, chunk in enumerate(chunks):
+        if not chunk.strip():
+            continue
+        chunk_path = f"{output_dir}/{seg_index}_part{ci}.wav"
+        _cosyvoice_tts_to_file(cosyvoice_model, chunk, chunk_path,
+                                speaker_wav, emotion)
+        combined += AudioSegment.from_file(chunk_path)
+        os.remove(chunk_path)
+    combined.export(f"{output_dir}/{seg_index}.wav", format="wav")

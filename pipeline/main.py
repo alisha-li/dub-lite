@@ -38,6 +38,8 @@ from utils import (
     overlay_audios,
     combine_audio_with_video,
     tts_segment,
+    tts_segment_cosyvoice,
+    load_cosyvoice,
     get_video_resolution,
     create_subtitle_chunks,
     create_subtitle_chunks_from_segments,
@@ -68,7 +70,11 @@ class YTDubPipeline:
             speakerTurnsPkl: bool = False,
             segmentsPkl: bool = False,
             finalSentencesPkl: bool = False,
-            progress_callback=None):
+            tts_engine: str = "xtts",
+            cosyvoice_model_dir: str = "pretrained_models/Fun-CosyVoice3-0.5B",
+            progress_callback=None,
+            tts_worker_fn=None,
+            num_tts_workers: int = 4):
         """progress_callback(stage: str, percent: int) is called at each pipeline stage."""
         def report(stage: str, percent: int):
             if progress_callback:
@@ -232,7 +238,15 @@ class YTDubPipeline:
         report("Generating speech", 60)
         os.makedirs("temp/audio_chunks", exist_ok=True)
         os.makedirs("temp/emotions_audio", exist_ok=True)
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+
+        use_cosyvoice = tts_engine == "cosyvoice"
+        if use_cosyvoice:
+            logger.info("Using CosyVoice TTS engine")
+            cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
+        else:
+            logger.info("Using XTTS TTS engine")
+            tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
                                    pymodule_file="custom_interface.py",
@@ -258,9 +272,14 @@ class YTDubPipeline:
                 AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
                 continue
 
-            tts_segment(tts, segment['translation'], i,
-                        f"temp/speakers_audio/{segment['speaker']}.wav",
-                        targ, segment['emotion'])
+            if use_cosyvoice:
+                tts_segment_cosyvoice(cosyvoice_model, segment['translation'], i,
+                                       f"temp/speakers_audio/{segment['speaker']}.wav",
+                                       segment['emotion'])
+            else:
+                tts_segment(tts, segment['translation'], i,
+                            f"temp/speakers_audio/{segment['speaker']}.wav",
+                            targ, segment['emotion'])
 
         # 8. Adjust audio timing
         report("Adjusting audio timing", 80)
@@ -325,8 +344,9 @@ if __name__ == "__main__":
         # gemini_model = os.getenv('GEMINI_MODEL'),
         hf_token = os.getenv('HF_TOKEN'), 
         mistral_api = os.getenv('MISTRAL_API_KEY'),
+        tts_engine = "xtts",
         speakerTurnsPkl = True, 
         segmentsPkl = True, 
-        finalSentencesPkl = False,
+        finalSentencesPkl = True,
     )
     logger.info(f"Dubbed video path: {result}")

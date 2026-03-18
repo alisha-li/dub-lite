@@ -32,6 +32,8 @@ For YouTube downloads I recommend [yt-dlp](https://github.com/yt-dlp/yt-dlp?tab=
 ## To Do:
 
 - [ ] Preserve lyrics in music - need some music extraction preprocessing
+- [ ] Batch translation calls for speed
+- [ ] TTS by each segment, no need for even speaker diarization at that point either?
 - [ ] Add cleanup logics for old videos
 - [ ] Set up hub where you can view or download batches of video
 

@@ -22,7 +22,18 @@ image = (
     .pip_install("wtpsplit")  # Layer 8
     .pip_install("mistralai")  # Layer 9
     .run_commands("python3 -c \"import nltk; nltk.download('punkt_tab')\"")
-    .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store"], copy=True)
+    .add_local_dir("pipeline", "/root/pipeline", ignore=[".DS_Store", "**/.DS_Store", "CosyVoice", "pretrained_models"], copy=True)
+    .add_local_dir("pipeline/CosyVoice", "/root/CosyVoice", ignore=[".DS_Store", "**/.DS_Store", ".git", "pretrained_models", "asset", "examples", "**/requirements.txt"], copy=True)
+    .pip_install(
+        # CosyVoice + Matcha-TTS deps (not already in earlier layers)
+        "conformer", "omegaconf", "hydra-core", "HyperPyYAML", "modelscope",
+        "x-transformers", "pyworld", "diffusers", "wetext", "inflect",
+        "gdown", "wget", "deepspeed", "lightning", "pyarrow",
+        "onnxruntime-gpu", "grpcio", "grpcio-tools",
+        "einops", "Unidecode", "phonemizer", "rootutils",
+        "hydra-colorlog", "hydra-optuna-sweeper",
+    )
+    .run_commands("pip install 'setuptools<78' && pip install --no-build-isolation --no-deps openai-whisper==20231117 && pip install tiktoken")
     .run_commands("python3 /root/pipeline/patch_torchaudio_backend.py")
 )
 
@@ -64,6 +75,90 @@ def debug_imports():
     return "all ok"
 
 
+NUM_TTS_WORKERS = 4  # number of parallel GPU containers for TTS
+
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    memory=65536,
+    timeout=1800,
+    volumes={"/models": vol},
+    secrets=[modal.Secret.from_name("dub-env")],
+)
+def tts_worker(batch: dict) -> dict:
+    """Process a batch of TTS segments on a dedicated GPU container.
+
+    Input: {
+        "segments": [{"index": int, "text": str, "emotion": str, "speaker": str,
+                       "start": float, "end": float}],
+        "speaker_wavs": {speaker_id: bytes},  # WAV bytes per speaker
+        "targ": str,  # target language code
+        "tts_engine": str,
+    }
+    Returns: {"wavs": {str(index): bytes}}  # generated WAV bytes keyed by segment index
+    """
+    import io
+    import torch
+    from pydub import AudioSegment
+
+    os.environ["TORCH_HOME"] = "/models/torch"
+    os.environ["HF_HOME"] = "/models/huggingface"
+    os.environ["COQUI_TOS_AGREED"] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+    os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
+    sys.path.insert(0, "/root")
+    sys.path.insert(0, "/root/pipeline")
+
+    from pipeline.utils import tts_segment, tts_segment_cosyvoice, load_cosyvoice
+
+    segments = batch["segments"]
+    speaker_wavs = batch["speaker_wavs"]
+    targ = batch["targ"]
+    tts_engine = batch.get("tts_engine", "xtts")
+
+    # Write speaker WAVs to temp files so TTS can read them
+    os.makedirs("/tmp/tts_speakers", exist_ok=True)
+    os.makedirs("/tmp/tts_audio_chunks", exist_ok=True)
+    for speaker_id, wav_bytes in speaker_wavs.items():
+        with open(f"/tmp/tts_speakers/{speaker_id}.wav", "wb") as f:
+            f.write(wav_bytes)
+
+    # Load TTS model once for this container
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_cosyvoice = tts_engine == "cosyvoice"
+    if use_cosyvoice:
+        cosyvoice_model = load_cosyvoice(batch.get("cosyvoice_model_dir", "/root/pretrained_models/Fun-CosyVoice3-0.5B"))
+    else:
+        from TTS.api import TTS
+        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+
+    results = {}
+    for seg in segments:
+        i = seg["index"]
+        text = seg["text"]
+        emotion = seg["emotion"]
+        speaker = seg["speaker"]
+        speaker_wav_path = f"/tmp/tts_speakers/{speaker}.wav"
+        chunk_path = f"/tmp/tts_audio_chunks/{i}.wav"
+
+        if not text or text.strip() == "":
+            dur_ms = max(1, int((seg["end"] - seg["start"]) * 1000))
+            AudioSegment.silent(duration=dur_ms).export(chunk_path, format="wav")
+        elif use_cosyvoice:
+            tts_segment_cosyvoice(cosyvoice_model, text, i, speaker_wav_path, emotion,
+                                   output_dir="/tmp/tts_audio_chunks")
+        else:
+            tts_segment(tts, text, i, speaker_wav_path, targ, emotion,
+                        output_dir="/tmp/tts_audio_chunks")
+
+        # Read generated WAV back as bytes
+        with open(chunk_path, "rb") as f:
+            results[str(i)] = f.read()
+
+    return {"wavs": results}
+
+
 def _upload_to_spaces(local_path: str, job_id: str) -> str:
     """Upload the dubbed video to Spaces and return the object key."""
     client = boto3.client(
@@ -102,6 +197,8 @@ def run_dubbing_pipeline(
     speakerTurnsPkl: bool = False,
     segmentsPkl: bool = False,
     finalSentencesPkl: bool = False,
+    tts_engine: str = "xtts",
+    cosyvoice_model_dir: str = "/root/pretrained_models/Fun-CosyVoice3-0.5B",
 ):
     """Runs the full dubbing pipeline on GPU.
 
@@ -140,6 +237,8 @@ def run_dubbing_pipeline(
             speakerTurnsPkl=speakerTurnsPkl,
             segmentsPkl=segmentsPkl,
             finalSentencesPkl=finalSentencesPkl,
+            tts_engine=tts_engine,
+            cosyvoice_model_dir=cosyvoice_model_dir,
             progress_callback=report_progress,
         )
         report_progress("Uploading to Spaces...", 95)
@@ -150,3 +249,37 @@ def run_dubbing_pipeline(
         # Re-raise as simple RuntimeError so Modal can serialize it; include full traceback so you can see which line in main/utils failed
         tb = traceback.format_exc()
         raise RuntimeError(f"{e}\n\nTraceback (actual failure):\n{tb}") from None
+
+
+@app.local_entrypoint()
+def test():
+    from dotenv import load_dotenv
+    from pathlib import Path
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+    client = boto3.client(
+        "s3",
+        region_name=os.environ.get("SPACES_REGION"),
+        endpoint_url=os.environ.get("SPACES_ENDPOINT"),
+        aws_access_key_id=os.environ.get("SPACES_ACCESS_KEY"),
+        aws_secret_access_key=os.environ.get("SPACES_SECRET_KEY"),
+        config=Config(signature_version="s3v4"),
+    )
+    presigned_url = client.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": os.environ.get("SPACES_BUCKET"),
+            "Key": "uploads/ff6d603c-e025-4fd0-8753-748218e7499d/Why Vail Resorts Is Losing Skiers in a Growing Industry ｜ WSJ [GlcWwAcrsfI].mp4",
+        },
+        ExpiresIn=3600,
+    )
+
+    result = run_dubbing_pipeline.remote(
+        job_id="test-local",
+        src=presigned_url,
+        targ="zh",
+        hf_token=os.environ["HF_TOKEN"],
+        mistral_api=os.environ.get("MISTRAL_API_KEY"),
+        tts_engine="xtts",
+    )
+    print(f"Result: {result}")
