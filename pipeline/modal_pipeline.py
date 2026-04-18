@@ -199,6 +199,7 @@ def run_dubbing_pipeline(
     finalSentencesPkl: bool = False,
     tts_engine: str = "xtts",
     cosyvoice_model_dir: str = "/root/pretrained_models/Fun-CosyVoice3-0.5B",
+    translation_mode: str = "per_sentence",
 ):
     """Runs the full dubbing pipeline on GPU.
 
@@ -242,6 +243,7 @@ def run_dubbing_pipeline(
             progress_callback=report_progress,
             tts_worker_fn=tts_worker,
             num_tts_workers=NUM_TTS_WORKERS,
+            translation_mode=translation_mode,
         )
         report_progress("Uploading to Spaces...", 95)
         output_key = _upload_to_spaces(output_path, job_id)
@@ -287,6 +289,7 @@ def run_audio_dubbing_pipeline(
     groq_model: str = None,
     gemini_model: str = None,
     tts_engine: str = "xtts",
+    translation_mode: str = "full_transcript",
 ):
     """Audio-only dubbing pipeline for the Chrome extension."""
     import requests as req
@@ -327,6 +330,7 @@ def run_audio_dubbing_pipeline(
             progress_callback=report_progress,
             tts_worker_fn=tts_worker,
             num_tts_workers=NUM_TTS_WORKERS,
+            translation_mode=translation_mode,
         )
 
         # Upload the combined dubbed audio to Spaces

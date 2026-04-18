@@ -44,6 +44,7 @@ from utils import (
     create_subtitle_chunks,
     create_subtitle_chunks_from_segments,
     generate_subtitles,
+    translate_full_transcript,
 )
 from log import setup_logging
 import logging
@@ -74,7 +75,8 @@ class YTDubPipeline:
             cosyvoice_model_dir: str = "pretrained_models/Fun-CosyVoice3-0.5B",
             progress_callback=None,
             tts_worker_fn=None,
-            num_tts_workers: int = 4):
+            num_tts_workers: int = 4,
+            translation_mode: str = "per_sentence"):
         """progress_callback(stage: str, percent: int) is called at each pipeline stage."""
         def report(stage: str, percent: int):
             if progress_callback:
@@ -184,7 +186,19 @@ class YTDubPipeline:
             logger.info("Loading existing final sentences from file...")
             with open("temp/final_sentences.pkl", "rb") as f:
                 sentences = pickle.load(f)
+        elif translation_mode == "full_transcript" and groq_api:
+            logger.info("Using full-transcript translation mode (Groq bulk call)")
+            sentences = translate_full_transcript(
+                sentences, src_lang, targ,
+                groq_api=groq_api, groq_model=groq_model,
+                progress_callback=progress_callback,
+                progress_start=35, progress_end=58,
+            )
+            with open("temp/final_sentences.pkl", "wb") as f:
+                pickle.dump(sentences, f)
         else:
+            if translation_mode == "full_transcript":
+                logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
             n_sentences = len(sentences)
             for i, sentence_obj in enumerate(sentences):
                 if n_sentences > 0:
@@ -410,7 +424,8 @@ class YTDubPipeline:
                   cosyvoice_model_dir: str = "pretrained_models/Fun-CosyVoice3-0.5B",
                   progress_callback=None,
                   tts_worker_fn=None,
-                  num_tts_workers: int = 4):
+                  num_tts_workers: int = 4,
+                  translation_mode: str = "per_sentence"):
         """Audio-only dubbing: same quality as dub(), but no video processing.
 
         Input: raw audio bytes (mp3/wav/etc)
@@ -495,32 +510,43 @@ class YTDubPipeline:
 
         # 6. Translation
         report("Translating", 35)
-        n_sentences = len(sentences)
-        for i, sentence_obj in enumerate(sentences):
-            if n_sentences > 0:
-                report("Translating", 35 + int(20 * (i + 1) / n_sentences))
-            sentence = sentence_obj['sentence']
+        if translation_mode == "full_transcript" and groq_api:
+            logger.info("Using full-transcript translation mode (Groq bulk call)")
+            sentences = translate_full_transcript(
+                sentences, src_lang, targ,
+                groq_api=groq_api, groq_model=groq_model,
+                progress_callback=progress_callback,
+                progress_start=35, progress_end=58,
+            )
+        else:
+            if translation_mode == "full_transcript":
+                logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
+            n_sentences = len(sentences)
+            for i, sentence_obj in enumerate(sentences):
+                if n_sentences > 0:
+                    report("Translating", 35 + int(20 * (i + 1) / n_sentences))
+                sentence = sentence_obj['sentence']
 
-            if i == 0:
-                before_context = ""
-                after_context = sentences[i+1]['sentence'] if len(sentences) > 1 else ""
-            elif i == len(sentences) - 1:
-                before_context = sentences[i-1]['sentence']
-                after_context = ""
-            else:
-                before_context = sentences[i-1]['sentence']
-                after_context = sentences[i+1]['sentence']
+                if i == 0:
+                    before_context = ""
+                    after_context = sentences[i+1]['sentence'] if len(sentences) > 1 else ""
+                elif i == len(sentences) - 1:
+                    before_context = sentences[i-1]['sentence']
+                    after_context = ""
+                else:
+                    before_context = sentences[i-1]['sentence']
+                    after_context = sentences[i+1]['sentence']
 
-            translation = utils.translate(sentence,
-                                          before_context,
-                                          after_context,
-                                          src_lang,
-                                          targ,
-                                          groq_api=groq_api,
-                                          groq_model=groq_model,
-                                          gemini_api=gemini_api,
-                                          gemini_model=gemini_model)
-            sentence_obj['translation'] = translation
+                translation = utils.translate(sentence,
+                                              before_context,
+                                              after_context,
+                                              src_lang,
+                                              targ,
+                                              groq_api=groq_api,
+                                              groq_model=groq_model,
+                                              gemini_api=gemini_api,
+                                              gemini_model=gemini_model)
+                sentence_obj['translation'] = translation
         report("Translation complete", 58)
 
         # Map translated sentences to segments

@@ -597,6 +597,186 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
         # else:
         #     return translate_chunk(sentence)
 
+def _build_full_transcript_prompt(chunk_sents, offset, src, targ):
+    source_lang = LANG_CODE_TO_NAME.get(src, src)
+    target_lang = LANG_CODE_TO_NAME.get(targ, targ)
+
+    # Detect whether this transcript has multiple distinct speakers. If only
+    # one (or none), drop speaker labels entirely — they add noise and the
+    # "multi-speaker" framing confuses the model on monologue videos.
+    unique_speakers = {s.get('speaker') for s in chunk_sents if s.get('speaker')}
+    multi_speaker = len(unique_speakers) > 1
+
+    lines = []
+    for i, s in enumerate(chunk_sents):
+        idx = offset + i
+        st = s.get('start')
+        et = s.get('end')
+        text = (s.get('sentence') or '').strip().replace('\n', ' ')
+        ts_part = (
+            f"{st:.1f}s-{et:.1f}s"
+            if isinstance(st, (int, float)) and isinstance(et, (int, float))
+            else ""
+        )
+        if multi_speaker:
+            spk = s.get('speaker') or 'Unknown'
+            header = f"{idx} | {ts_part} | {spk}" if ts_part else f"{idx} | {spk}"
+        else:
+            header = f"{idx} | {ts_part}" if ts_part else f"{idx}"
+        lines.append(f"[{header}] {text}")
+    transcript = "\n".join(lines)
+
+    if multi_speaker:
+        line_format = "[index | timestamp | Speaker] text"
+        style_hint = (
+            f"Use context from surrounding lines to resolve pronouns, slang, and ambiguity. "
+            f"Lines from the same speaker label should use a consistent register and word choice."
+        )
+    else:
+        line_format = "[index | timestamp] text"
+        style_hint = (
+            f"Use context from surrounding lines to resolve pronouns, slang, and ambiguity. "
+            f"Keep register and word choice consistent across the whole transcript."
+        )
+
+    first_idx = offset
+    second_idx = offset + 1 if len(chunk_sents) > 1 else offset
+    return (
+        f"You are translating a transcript from {source_lang} to {target_lang}.\n\n"
+        f"Each line has the format: {line_format}\n\n"
+        f"Translate every line into {target_lang}. {style_hint}\n\n"
+        f"Output rules:\n"
+        f"- Respond with a single JSON object, nothing else.\n"
+        f"- Keys are the indices as strings (\"0\", \"1\", ...).\n"
+        f"- Values are the translated text ONLY — no index, no timestamp, no speaker label.\n"
+        f"- Include EVERY index shown in the transcript. Do not skip any.\n"
+        f"- Do not wrap in markdown fences or add commentary.\n\n"
+        f"Transcript:\n{transcript}\n\n"
+        f'Example output shape: {{"{first_idx}": "translation", "{second_idx}": "translation"}}'
+    )
+
+
+def translate_full_transcript(sentences: list,
+                              src: str,
+                              targ: str,
+                              groq_api: str,
+                              groq_model: str = None,
+                              fallback_per_sentence: bool = True,
+                              progress_callback=None,
+                              progress_start: int = 35,
+                              progress_end: int = 58):
+    """Translate every sentence in one or more bulk Groq calls.
+
+    Each sentence dict gets a 'translation' key populated. Auto-chunks when the
+    transcript is too large for a single request. Falls back to per-sentence
+    translate() for any indices the model omits (unless fallback_per_sentence=False).
+    """
+    import time, json as _json
+    if not groq_api:
+        raise ValueError("translate_full_transcript requires groq_api")
+    if not sentences:
+        return sentences
+    model = groq_model or "openai/gpt-oss-120b"
+
+    # Chunking heuristic — stay well under gpt-oss-120b's 131k context and 65k
+    # completion cap, and polite vs Groq TPM. chars/3.5 ≈ tokens for English.
+    MAX_CHARS_PER_CHUNK = 30_000   # ≈ 9k input tokens
+    MAX_SENTENCES_PER_CHUNK = 200
+
+    chunks = []
+    cur_start = 0
+    cur_chars = 0
+    for i, s in enumerate(sentences):
+        s_len = len(s.get('sentence') or '')
+        over_sent = (i - cur_start) >= MAX_SENTENCES_PER_CHUNK
+        over_char = (cur_chars + s_len) > MAX_CHARS_PER_CHUNK
+        if (over_sent or over_char) and i > cur_start:
+            chunks.append((cur_start, i))
+            cur_start = i
+            cur_chars = 0
+        cur_chars += s_len
+    chunks.append((cur_start, len(sentences)))
+    logger.info(f"Full-transcript translate: {len(sentences)} sentences → {len(chunks)} Groq chunk(s)")
+
+    translated_by_idx = {}
+    client = Groq(api_key=groq_api)
+
+    for chunk_i, (start, end) in enumerate(chunks):
+        chunk_sents = sentences[start:end]
+        prompt = _build_full_transcript_prompt(chunk_sents, start, src, targ)
+
+        last_err = None
+        parsed = None
+        for attempt in range(3):
+            try:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    response_format={"type": "json_object"},
+                )
+                raw = (completion.choices[0].message.content or "").strip()
+                parsed = _json.loads(raw)
+                break
+            except Exception as e:
+                last_err = e
+                logger.warning(f"Full-transcript chunk {chunk_i+1}/{len(chunks)} attempt {attempt+1}/3 failed: {e}")
+                if attempt < 2:
+                    time.sleep(5 * (attempt + 1))
+
+        if parsed is None:
+            logger.warning(f"Chunk {chunk_i+1} gave up after 3 attempts: {last_err}")
+        elif not isinstance(parsed, dict):
+            logger.warning(f"Chunk {chunk_i+1} returned non-dict JSON: {type(parsed).__name__}")
+        else:
+            added = 0
+            for k, v in parsed.items():
+                try:
+                    idx = int(k)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(v, str) and v.strip():
+                    translated_by_idx[idx] = v.strip()
+                    added += 1
+            logger.info(f"Chunk {chunk_i+1}/{len(chunks)}: got {added}/{end-start} translations")
+
+        if progress_callback and len(chunks) > 0:
+            pct = progress_start + int(
+                (progress_end - progress_start) * (chunk_i + 1) / len(chunks)
+            )
+            progress_callback("Translating (full transcript)", pct)
+
+    # Assign; fall back per-sentence for any missing indices
+    missing_idxs = []
+    for i, s in enumerate(sentences):
+        tr = translated_by_idx.get(i)
+        if tr:
+            s['translation'] = tr
+        else:
+            missing_idxs.append(i)
+
+    if missing_idxs and fallback_per_sentence:
+        logger.warning(
+            f"{len(missing_idxs)} sentences missing from full-transcript output → per-sentence fallback"
+        )
+        for i in missing_idxs:
+            s = sentences[i]
+            before = sentences[i - 1]['sentence'] if i > 0 else ""
+            after = sentences[i + 1]['sentence'] if i < len(sentences) - 1 else ""
+            try:
+                s['translation'] = translate(
+                    s['sentence'], before, after, src, targ,
+                    groq_api=groq_api, groq_model=model,
+                )
+            except Exception as e:
+                logger.warning(f"Per-sentence fallback for idx {i} failed: {e}, leaving empty")
+                s['translation'] = ""
+    elif missing_idxs:
+        for i in missing_idxs:
+            sentences[i]['translation'] = ""
+
+    return sentences
+
+
 def classify_emotion(audio_path: str, classifier: foreign_class):
     try:
         out_prob, score, index, text_lab = classifier.classify_file(audio_path)
