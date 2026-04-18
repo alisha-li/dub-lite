@@ -213,15 +213,24 @@ async def create_audio_job(
 
     mistral_api_val = (mistral_api or "").strip() or os.environ.get("MISTRAL_API_KEY")
 
+    # Chrome extension path: no translation provider supplied. Default to
+    # Groq gpt-oss-120b using the server's GROQ_API_KEY.
+    groq_api_val = (groq_api or "").strip() or None
+    gemini_api_val = (gemini_api or "").strip() or None
+    if not groq_api_val and not gemini_api_val:
+        groq_api_val = (os.environ.get("GROQ_API_KEY") or "").strip() or None
+        if groq_api_val:
+            groq_model = (groq_model or "").strip() or "openai/gpt-oss-120b"
+
     run_pipeline = modal.Function.from_name("dub-lite", "run_audio_dubbing_pipeline")
     call = run_pipeline.spawn(
         job_id=job_id,
         audio_url=audio_url,
         targ=target_language,
         mistral_api=mistral_api_val,
-        groq_api=groq_api,
+        groq_api=groq_api_val,
         groq_model=groq_model,
-        gemini_api=gemini_api,
+        gemini_api=gemini_api_val,
         gemini_model=gemini_model,
     )
 

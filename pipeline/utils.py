@@ -1240,10 +1240,38 @@ def split_text(text: str, max_chars: int = MAX_TTS_CHARS, language: str = None) 
     return [c for c in chunks if c]
 
 
+def _get_or_compute_xtts_latents(tts, speaker_wav: str):
+    """Cache XTTS conditioning latents per speaker_wav path on the tts instance.
+    Avoids recomputing GPT + speaker-encoder embeddings every call (the biggest
+    per-segment cost in XTTS)."""
+    cache = getattr(tts, "_latent_cache", None)
+    if cache is None:
+        cache = {}
+        tts._latent_cache = cache
+    if speaker_wav not in cache:
+        gpt_cond_latent, speaker_embedding = tts.synthesizer.tts_model.get_conditioning_latents(
+            audio_path=speaker_wav
+        )
+        cache[speaker_wav] = (gpt_cond_latent, speaker_embedding)
+    return cache[speaker_wav]
+
+
 def _tts_to_file_safe(tts, text: str, file_path: str, speaker_wav: str, language: str, emotion: str, speed: float = 1.0):
-    """Call tts.tts_to_file, falling back to silence on ZeroDivisionError (TTS bug when audio is 0-duration)."""
+    """Synthesize text to file using cached speaker latents. Falls back to
+    silence on ZeroDivisionError (TTS bug when audio is 0-duration)."""
     try:
-        tts.tts_to_file(text=text, file_path=file_path, speaker_wav=speaker_wav, language=language, emotion=emotion, speed=speed)
+        gpt_cond_latent, speaker_embedding = _get_or_compute_xtts_latents(tts, speaker_wav)
+        out = tts.synthesizer.tts_model.inference(
+            text=text,
+            language=language,
+            gpt_cond_latent=gpt_cond_latent,
+            speaker_embedding=speaker_embedding,
+            speed=speed,
+        )
+        wav = out["wav"]
+        sr = tts.synthesizer.output_sample_rate
+        wav_tensor = torch.as_tensor(wav, dtype=torch.float32).detach().cpu().unsqueeze(0)
+        torchaudio.save(file_path, wav_tensor, sr)
     except ZeroDivisionError:
         logger.warning(f"TTS produced 0-duration audio for text={repr(text[:50])}..., writing 100ms silence")
         AudioSegment.silent(duration=100).export(file_path, format="wav")

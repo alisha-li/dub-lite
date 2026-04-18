@@ -1,6 +1,6 @@
 console.log("[dub-lite] content script loaded");
 
-var API_BASE = "http://localhost:8000";
+var API_BASE = "https://dub-lite.alishali.info";
 
 // Press "q" to start dubbing the current video
 document.addEventListener("keydown", function(e) {
