@@ -1200,11 +1200,15 @@ def stretch_audio(audio_path: str, speed_factor: float):
 
 
 MAX_TTS_CHARS = 250  # stay well under XTTS's 400-token limit
+MAX_TTS_CHARS_CJK = 75  # CJK characters use more tokens per char in XTTS
+CJK_LANGS = {"zh", "ja", "ko"}
 
 
-def split_text(text: str, max_chars: int = MAX_TTS_CHARS) -> list[str]:
+def split_text(text: str, max_chars: int = MAX_TTS_CHARS, language: str = None) -> list[str]:
     """Split text into chunks that fit within the TTS token limit,
     preferring sentence boundaries, then clause boundaries, then word boundaries."""
+    if language and language in CJK_LANGS:
+        max_chars = MAX_TTS_CHARS_CJK
     if len(text) <= max_chars:
         return [text]
 
@@ -1254,7 +1258,7 @@ def tts_segment(tts, text: str, seg_index: int,
         AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return
 
-    chunks = [c for c in split_text(text) if c.strip()]
+    chunks = [c for c in split_text(text, language=language) if c.strip()]
     if not chunks:
         AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return
@@ -1344,14 +1348,15 @@ def _cosyvoice_tts_to_file(cosyvoice_model, text: str, file_path: str,
 
 def tts_segment_cosyvoice(cosyvoice_model, text: str, seg_index: int,
                            speaker_wav: str, emotion: str,
-                           output_dir: str = "temp/audio_chunks"):
+                           output_dir: str = "temp/audio_chunks",
+                           language: str = None):
     """CosyVoice version of tts_segment. Drop-in alternative."""
     text = (text or "").strip()
     if not text:
         AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return
 
-    chunks = [c for c in split_text(text) if c.strip()]
+    chunks = [c for c in split_text(text, language=language) if c.strip()]
     if not chunks:
         AudioSegment.silent(duration=100).export(f"{output_dir}/{seg_index}.wav", format="wav")
         return

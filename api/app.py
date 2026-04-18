@@ -175,6 +175,67 @@ async def create_job(
         "message": "Job created successfully"
     }
 
+@app.post("/api/jobs/audio")
+async def create_audio_job(
+    file: UploadFile = File(...),
+    target_language: str = Form("zh"),
+    groq_api: Optional[str] = Form(None),
+    groq_model: Optional[str] = Form(None),
+    gemini_api: Optional[str] = Form(None),
+    gemini_model: Optional[str] = Form(None),
+    mistral_api: Optional[str] = Form(None),
+):
+    """Audio-only dubbing job for the Chrome extension.
+    Accepts an audio file, uploads to Spaces, spawns the audio pipeline on Modal.
+    """
+    job_id = str(uuid.uuid4())
+
+    # Upload audio to Spaces
+    client = _get_spaces_client()
+    bucket = os.environ.get("SPACES_BUCKET")
+    if not client or not bucket:
+        raise HTTPException(status_code=503, detail="Spaces not configured")
+    object_key = f"uploads/{job_id}/{file.filename}"
+    file_bytes = await file.read()
+    client.put_object(Bucket=bucket, Key=object_key, Body=file_bytes, ContentType="audio/mpeg")
+    audio_url = _get_spaces_presigned_get_url(object_key)
+
+    job_data = {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": 0,
+        "stage": "Starting...",
+        "source_type": "audio",
+        "source_path": object_key,
+        "target_language": target_language,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    mistral_api_val = (mistral_api or "").strip() or os.environ.get("MISTRAL_API_KEY")
+
+    run_pipeline = modal.Function.from_name("dub-lite", "run_audio_dubbing_pipeline")
+    call = run_pipeline.spawn(
+        job_id=job_id,
+        audio_url=audio_url,
+        targ=target_language,
+        mistral_api=mistral_api_val,
+        groq_api=groq_api,
+        groq_model=groq_model,
+        gemini_api=gemini_api,
+        gemini_model=gemini_model,
+    )
+
+    job_data["modal_call_id"] = call.object_id
+    redis_client.set(f"job:{job_id}", json.dumps(job_data))
+    redis_client.expire(f"job:{job_id}", 60 * 60 * 24 * 5)
+
+    return {
+        "job_id": job_id,
+        "status": "PENDING",
+        "message": "Audio dubbing job created",
+    }
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):
     job_data = redis_client.get(f"job:{job_id}")

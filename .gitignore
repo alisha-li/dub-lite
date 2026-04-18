@@ -29,6 +29,7 @@ cookies.txt
 
 pipeline/CosyVoice/
 pipeline/pretrained_models/
+pipeline/test_inputs/
 
 .cursor/
 

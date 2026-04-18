@@ -398,27 +398,340 @@ class YTDubPipeline:
         report("Done", 100)
         return output_video_path
 
+    def dub_audio(self,
+                  audio_bytes: bytes,
+                  targ: str,
+                  mistral_api: str = None,
+                  gemini_api: str = None,
+                  groq_api: str = None,
+                  groq_model: str = None,
+                  gemini_model: str = None,
+                  tts_engine: str = "xtts",
+                  cosyvoice_model_dir: str = "pretrained_models/Fun-CosyVoice3-0.5B",
+                  progress_callback=None,
+                  tts_worker_fn=None,
+                  num_tts_workers: int = 4):
+        """Audio-only dubbing: same quality as dub(), but no video processing.
+
+        Input: raw audio bytes (mp3/wav/etc)
+        Returns: {
+            "chunks": [{"index": int, "start": float, "end": float,
+                         "speaker": str, "wav": bytes}],
+            "src_lang": str,
+        }
+        """
+        import io
+
+        def report(stage: str, percent: int):
+            if progress_callback:
+                progress_callback(stage, percent)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Clean up old temp files from previous runs
+        report("Starting...", 0)
+        cleanup_dirs = [
+            "temp/speakers_audio",
+            "temp/audio_chunks",
+            "temp/adj_audio_chunks",
+            "temp/emotions_audio"
+        ]
+        for dir_path in cleanup_dirs:
+            if os.path.exists(dir_path):
+                for file in os.listdir(dir_path):
+                    if file.endswith(".wav"):
+                        os.remove(os.path.join(dir_path, file))
+        logger.info("Cleaned up old temp audio files")
+
+        # 1. Load audio from bytes
+        report("Loading audio", 3)
+        orig_audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+        orig_audio_path = "temp/original_audio.wav"
+        orig_audio.export(orig_audio_path, format="wav")
+        report("Audio loaded", 7)
+
+        # 2. Transcription & diarization
+        report("Transcribing & diarizing", 10)
+        if not mistral_api:
+            raise ValueError("mistral_api is required for Mistral transcription")
+        logger.info("Running Mistral Transcription (with diarization)...")
+        mp3_path = "temp/original_audio_mistral.mp3"
+        orig_audio.export(mp3_path, format="mp3", bitrate="64k")
+        logger.info(f"Compressed audio for Mistral: {os.path.getsize(mp3_path) / 1024 / 1024:.1f} MB")
+        client = Mistral(api_key=mistral_api)
+        with open(mp3_path, "rb") as f:
+            transcription_response = client.audio.transcriptions.complete(
+                model="voxtral-mini-2602",
+                file={
+                    "content": f,
+                    "file_name": "audio.mp3",
+                },
+                diarize=True,
+                timestamp_granularities=["segment"],
+            )
+        os.remove(mp3_path)
+        segments = mistral_segments_to_pipeline(transcription_response.segments)
+        src_lang = transcription_response.language or "en"
+        logger.info(f"Transcription completed! Found {len(segments)} segments")
+
+        speaker_turns = segments_to_speaker_turns(segments)
+        report("Transcription complete", 18)
+
+        # 3. Extract & denoise speaker audio (for voice cloning)
+        report("Extracting speaker audio", 20)
+        split_speakers_and_denoise(orig_audio, speaker_turns, "temp/speakers_audio")
+        report("Speaker audio ready", 24)
+
+        # 4. Process transcription segments
+        report("Processing segments", 26)
+        segments_with_speakers = merge_close_segments(segments)
+        logger.info(f"Merged into {len(segments_with_speakers)} segments")
+
+        # 5. Build sentences
+        report("Building sentences", 30)
+        sentences = create_sentences(segments_with_speakers)
+        logger.info(f"Created {len(sentences)} sentences")
+        sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
+
+        # 6. Translation
+        report("Translating", 35)
+        n_sentences = len(sentences)
+        for i, sentence_obj in enumerate(sentences):
+            if n_sentences > 0:
+                report("Translating", 35 + int(20 * (i + 1) / n_sentences))
+            sentence = sentence_obj['sentence']
+
+            if i == 0:
+                before_context = ""
+                after_context = sentences[i+1]['sentence'] if len(sentences) > 1 else ""
+            elif i == len(sentences) - 1:
+                before_context = sentences[i-1]['sentence']
+                after_context = ""
+            else:
+                before_context = sentences[i-1]['sentence']
+                after_context = sentences[i+1]['sentence']
+
+            translation = utils.translate(sentence,
+                                          before_context,
+                                          after_context,
+                                          src_lang,
+                                          targ,
+                                          groq_api=groq_api,
+                                          groq_model=groq_model,
+                                          gemini_api=gemini_api,
+                                          gemini_model=gemini_model)
+            sentence_obj['translation'] = translation
+        report("Translation complete", 58)
+
+        # Map translated sentences to segments
+        final_segments = map_translated_sentences_to_segments(sentences, segments_with_speakers)
+        logger.info(f"Mapped translations to {len(final_segments)} segments")
+
+        # Debug: Check segment translations
+        logger.info("\n=== FINAL SEGMENTS CHECK ===")
+        for i, seg in enumerate(final_segments):
+            print(f"Segment {i}:")
+            print(f"  Speaker: {seg.get('speaker')}")
+            print(f"  Original text: '{seg.get('text', 'MISSING')}'")
+            print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
+            print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
+        logger.info("="*40 + "\n")
+
+        # 7. Text to Speech
+        report("Generating speech", 60)
+        os.makedirs("temp/audio_chunks", exist_ok=True)
+        os.makedirs("temp/emotions_audio", exist_ok=True)
+
+        # 7a. Classify emotions for all segments (fast, runs locally)
+        n_segments = len(final_segments)
+        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                                   pymodule_file="custom_interface.py",
+                                   classname="CustomEncoderWav2vec2Classifier",
+                                   run_opts={"device": device.type})
+        for i, segment in enumerate(final_segments):
+            if segment['speaker'] is None:
+                segment['emotion'] = 'neutral'
+                continue
+            start = segment['start']*1000
+            end = segment['end']*1000
+            orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")
+            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav", classifier)
+            os.remove("temp/emotions_audio/emotions.wav")
+
+        # 7b. Generate TTS — parallel workers or local
+        if tts_worker_fn is not None:
+            # --- Parallel TTS across multiple GPU containers ---
+            logger.info(f"Using {num_tts_workers} parallel TTS workers")
+
+            speaker_ids = set(seg['speaker'] for seg in final_segments if seg['speaker'] is not None)
+            speaker_wavs = {}
+            for spk in speaker_ids:
+                spk_path = f"temp/speakers_audio/{spk}.wav"
+                if os.path.exists(spk_path):
+                    with open(spk_path, "rb") as f:
+                        speaker_wavs[spk] = f.read()
+
+            tts_segments = []
+            for i, segment in enumerate(final_segments):
+                if segment['speaker'] is None:
+                    dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
+                    AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
+                    continue
+                tts_segments.append({
+                    "index": i,
+                    "text": segment.get('translation', ''),
+                    "emotion": segment.get('emotion', 'neutral'),
+                    "speaker": segment['speaker'],
+                    "start": segment['start'],
+                    "end": segment['end'],
+                })
+
+            MIN_SEGMENTS_PER_WORKER = 5
+            actual_workers = max(1, min(num_tts_workers, len(tts_segments) // MIN_SEGMENTS_PER_WORKER))
+            logger.info(f"{len(tts_segments)} segments → {actual_workers} TTS workers")
+
+            batches = [[] for _ in range(actual_workers)]
+            for idx, seg_data in enumerate(tts_segments):
+                batches[idx % actual_workers].append(seg_data)
+            batches = [b for b in batches if b]
+
+            batch_inputs = []
+            for batch in batches:
+                batch_speakers = set(s["speaker"] for s in batch)
+                batch_inputs.append({
+                    "segments": batch,
+                    "speaker_wavs": {spk: speaker_wavs[spk] for spk in batch_speakers if spk in speaker_wavs},
+                    "targ": targ,
+                    "tts_engine": tts_engine,
+                    "cosyvoice_model_dir": cosyvoice_model_dir,
+                })
+
+            report("Generating speech (parallel)", 62)
+            for result_idx, result in enumerate(tts_worker_fn.map(batch_inputs)):
+                report("Generating speech (parallel)", 62 + int(16 * (result_idx + 1) / len(batch_inputs)))
+                for seg_idx_str, wav_bytes in result["wavs"].items():
+                    with open(f"temp/audio_chunks/{seg_idx_str}.wav", "wb") as f:
+                        f.write(wav_bytes)
+            logger.info("Parallel TTS complete")
+
+        else:
+            # --- Local single-GPU TTS (original path) ---
+            use_cosyvoice = tts_engine == "cosyvoice"
+            if use_cosyvoice:
+                logger.info("Using CosyVoice TTS engine")
+                cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
+            else:
+                logger.info("Using XTTS TTS engine")
+                tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+
+            for i, segment in enumerate(final_segments):
+                if n_segments > 0:
+                    report("Generating speech", 60 + int(18 * (i + 1) / n_segments))
+                if segment['speaker'] is None:
+                    logger.warning(f"Segment {i} has no speaker, skipping")
+                    continue
+
+                logger.info(f"TTS-ing segment {i}")
+
+                if not segment['translation'] or segment['translation'].strip() == "":
+                    logger.warning(f"Segment {i} has empty translation, generating silence")
+                    dur_ms = max(1, int((segment['end'] - segment['start']) * 1000))
+                    AudioSegment.silent(duration=dur_ms).export(f"temp/audio_chunks/{i}.wav", format="wav")
+                    continue
+
+                if use_cosyvoice:
+                    tts_segment_cosyvoice(cosyvoice_model, segment['translation'], i,
+                                           f"temp/speakers_audio/{segment['speaker']}.wav",
+                                           segment['emotion'])
+                else:
+                    tts_segment(tts, segment['translation'], i,
+                                f"temp/speakers_audio/{segment['speaker']}.wav",
+                                targ, segment['emotion'])
+
+        # 8. Adjust audio timing
+        report("Adjusting audio timing", 80)
+        os.makedirs("temp/adj_audio_chunks", exist_ok=True)
+        adjust_audio(final_segments, MIN_SPEED=0.85, MAX_SPEED=2, orig_audio_len=len(orig_audio))
+
+        # 9. Stitch audio chunks
+        report("Stitching audio", 87)
+        stitch_chunks(final_segments)
+
+        # 10. Separate background audio
+        report("Separating background audio", 90)
+        separator = Separator()
+        separator.load_model(model_filename='2_HP-UVR.pth')
+        background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
+        dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")
+        logger.info(f"dubbed_audio length: {len(dubbed_audio)}")
+        logger.info(f"background_audio length: {len(background_audio)}")
+
+        # 11. Overlay dubbed speech with background
+        report("Combining speech and background audio", 94)
+        combined_audio_path = overlay_audios(dubbed_audio, background_audio)
+
+        # 12. Return chunks with timing info
+        report("Building response", 97)
+        chunks = []
+        for i, seg in enumerate(final_segments):
+            adj_path = f"temp/adj_audio_chunks/{i}.wav"
+            if os.path.exists(adj_path):
+                with open(adj_path, "rb") as f:
+                    wav_bytes = f.read()
+                chunks.append({
+                    "index": i,
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "speaker": seg.get("speaker"),
+                    "wav": wav_bytes,
+                })
+
+        # Also return the final combined audio (dubbed + background)
+        with open(combined_audio_path, "rb") as f:
+            combined_wav_bytes = f.read()
+
+        report("Done", 100)
+        return {
+            "chunks": chunks,
+            "combined_audio": combined_wav_bytes,
+            "src_lang": src_lang,
+        }
+
 # TODO:
  # 1. Check through functions again to ensure smooth transitions
  # 2. Maybe hardcode paths up top?
 
 if __name__ == "__main__":
-    # import argparse
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--mode', choices=['video', 'audio'], default='video')
+    args = parser.parse_args()
 
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument('--url', required=True)
-    # args = parser.parse_args()
     pipeline = YTDubPipeline()
-    result = pipeline.dub( 
-        src="temp/Orig-NYT.mp4", 
-        targ="zh", 
-        # gemini_api = os.getenv('GEMINI_API'),
-        # gemini_model = os.getenv('GEMINI_MODEL'),
-        hf_token = os.getenv('HF_TOKEN'), 
-        mistral_api = os.getenv('MISTRAL_API_KEY'),
-        tts_engine = "xtts",
-        speakerTurnsPkl = True, 
-        segmentsPkl = True, 
-        finalSentencesPkl = True,
-    )
-    logger.info(f"Dubbed video path: {result}")
+
+    if args.mode == "audio":
+        with open("temp/orig_audio.wav", "rb") as f:
+            audio_bytes = f.read()
+        result = pipeline.dub_audio(
+            audio_bytes=audio_bytes,
+            targ="zh",
+            mistral_api=os.getenv('MISTRAL_API_KEY'),
+            tts_engine="xtts",
+        )
+        logger.info(f"Got {len(result['chunks'])} chunks, src_lang: {result['src_lang']}")
+        with open("temp/dubbed_audio_only.wav", "wb") as f:
+            f.write(result["combined_audio"])
+        logger.info("Saved combined dubbed audio to temp/dubbed_audio_only.wav")
+    else:
+        result = pipeline.dub(
+            src="test_inputs/345mile.mp4",
+            targ="zh",
+            hf_token=os.getenv('HF_TOKEN'),
+            mistral_api=os.getenv('MISTRAL_API_KEY'),
+            groq_api=os.getenv('GROQ_API_KEY'),
+            tts_engine="xtts",
+            speakerTurnsPkl=True,
+            segmentsPkl=True,
+            finalSentencesPkl=True,
+        )
+        logger.info(f"Dubbed video path: {result}")

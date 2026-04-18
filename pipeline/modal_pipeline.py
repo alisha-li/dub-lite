@@ -253,6 +253,93 @@ def run_dubbing_pipeline(
         raise RuntimeError(f"{e}\n\nTraceback (actual failure):\n{tb}") from None
 
 
+def _upload_audio_to_spaces(audio_bytes: bytes, job_id: str) -> str:
+    """Upload dubbed audio to Spaces and return the object key."""
+    client = boto3.client(
+        "s3",
+        region_name=os.environ.get("SPACES_REGION"),
+        endpoint_url=os.environ.get("SPACES_ENDPOINT"),
+        aws_access_key_id=os.environ.get("SPACES_ACCESS_KEY"),
+        aws_secret_access_key=os.environ.get("SPACES_SECRET_KEY"),
+        config=Config(signature_version="s3v4"),
+    )
+    bucket = os.environ.get("SPACES_BUCKET")
+    object_key = f"outputs/{job_id}/dubbed.wav"
+    client.put_object(Bucket=bucket, Key=object_key, Body=audio_bytes, ContentType="audio/wav")
+    return object_key
+
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    memory=65536,
+    timeout=3600,
+    volumes={"/models": vol},
+    secrets=[modal.Secret.from_name("dub-env"), modal.Secret.from_name("dub-spaces")],
+)
+def run_audio_dubbing_pipeline(
+    job_id: str,
+    audio_url: str,
+    targ: str,
+    mistral_api: str = None,
+    gemini_api: str = None,
+    groq_api: str = None,
+    groq_model: str = None,
+    gemini_model: str = None,
+    tts_engine: str = "xtts",
+):
+    """Audio-only dubbing pipeline for the Chrome extension."""
+    import requests as req
+
+    os.environ["TORCH_HOME"] = "/models/torch"
+    os.environ["HF_HOME"] = "/models/huggingface"
+    os.environ["COQUI_TOS_AGREED"] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+    os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
+    sys.path.append("/root")
+    sys.path.append("/root/pipeline")
+    from pipeline.main import YTDubPipeline
+
+    if not (mistral_api or "").strip():
+        mistral_api = (os.environ.get("MISTRAL_API_KEY") or "").strip() or None
+
+    def report_progress(stage: str, percent: int):
+        progress_dict[job_id] = {"stage": stage, "progress": percent}
+
+    try:
+        # Download the audio from Spaces
+        report_progress("Downloading audio...", 2)
+        resp = req.get(audio_url, timeout=120)
+        resp.raise_for_status()
+        audio_bytes = resp.content
+
+        report_progress("Starting pipeline...", 5)
+        pipeline = YTDubPipeline()
+        result = pipeline.dub_audio(
+            audio_bytes=audio_bytes,
+            targ=targ,
+            mistral_api=mistral_api,
+            gemini_api=gemini_api,
+            groq_api=groq_api,
+            groq_model=groq_model,
+            gemini_model=gemini_model,
+            tts_engine=tts_engine,
+            progress_callback=report_progress,
+            tts_worker_fn=tts_worker,
+            num_tts_workers=NUM_TTS_WORKERS,
+        )
+
+        # Upload the combined dubbed audio to Spaces
+        report_progress("Uploading result...", 97)
+        output_key = _upload_audio_to_spaces(result["combined_audio"], job_id)
+        report_progress("Done", 100)
+        return output_key
+
+    except Exception as e:
+        tb = traceback.format_exc()
+        raise RuntimeError(f"{e}\n\nTraceback:\n{tb}") from None
+
+
 @app.local_entrypoint()
 def test():
     from dotenv import load_dotenv
@@ -282,6 +369,7 @@ def test():
         targ="zh",
         hf_token=os.environ["HF_TOKEN"],
         mistral_api=os.environ.get("MISTRAL_API_KEY"),
+        groq_api=os.environ.get("GROQ_API_KEY"),
         tts_engine="xtts",
     )
     print(f"Result: {result}")
