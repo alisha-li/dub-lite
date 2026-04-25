@@ -115,7 +115,8 @@ async def create_job(
     groq_api: Optional[str] = Form(None),
     groq_model: Optional[str] = Form(None),
     mistral_api: Optional[str] = Form(None),
-    hf_token: Optional[str] = Form(None)
+    hf_token: Optional[str] = Form(None),
+    translation_mode: Optional[str] = Form("per_sentence"),
 ):
     job_id = str(uuid.uuid4())
 
@@ -163,6 +164,7 @@ async def create_job(
         groq_model=groq_model,
         gemini_model=gemini_model,
         mistral_api=mistral_api_val,
+        translation_mode=(translation_mode or "per_sentence"),
     )
 
     job_data["modal_call_id"] = call.object_id
@@ -184,6 +186,7 @@ async def create_audio_job(
     gemini_api: Optional[str] = Form(None),
     gemini_model: Optional[str] = Form(None),
     mistral_api: Optional[str] = Form(None),
+    translation_mode: Optional[str] = Form("full_transcript"),
 ):
     """Audio-only dubbing job for the Chrome extension.
     Accepts an audio file, uploads to Spaces, spawns the audio pipeline on Modal.
@@ -232,6 +235,7 @@ async def create_audio_job(
         groq_model=groq_model,
         gemini_api=gemini_api_val,
         gemini_model=gemini_model,
+        translation_mode=(translation_mode or "full_transcript"),
     )
 
     job_data["modal_call_id"] = call.object_id

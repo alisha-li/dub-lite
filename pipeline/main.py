@@ -181,12 +181,13 @@ class YTDubPipeline:
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 6. Translation
-        report("Translating", 35)
         if finalSentencesPkl:
+            report("Translating", 35)
             logger.info("Loading existing final sentences from file...")
             with open("temp/final_sentences.pkl", "rb") as f:
                 sentences = pickle.load(f)
         elif translation_mode == "full_transcript" and groq_api:
+            report("Translating (full transcript)", 35)
             logger.info("Using full-transcript translation mode (Groq bulk call)")
             sentences = translate_full_transcript(
                 sentences, src_lang, targ,
@@ -197,6 +198,7 @@ class YTDubPipeline:
             with open("temp/final_sentences.pkl", "wb") as f:
                 pickle.dump(sentences, f)
         else:
+            report("Translating", 35)
             if translation_mode == "full_transcript":
                 logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
             n_sentences = len(sentences)
@@ -509,8 +511,8 @@ class YTDubPipeline:
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
         # 6. Translation
-        report("Translating", 35)
         if translation_mode == "full_transcript" and groq_api:
+            report("Translating (full transcript)", 35)
             logger.info("Using full-transcript translation mode (Groq bulk call)")
             sentences = translate_full_transcript(
                 sentences, src_lang, targ,
@@ -519,6 +521,7 @@ class YTDubPipeline:
                 progress_start=35, progress_end=58,
             )
         else:
+            report("Translating", 35)
             if translation_mode == "full_transcript":
                 logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
             n_sentences = len(sentences)

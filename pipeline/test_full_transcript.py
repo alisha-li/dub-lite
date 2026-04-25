@@ -85,8 +85,8 @@ def translate_full_transcript(sentences, src, targ, groq_api, groq_model=None):
         return sentences
     model = groq_model or "openai/gpt-oss-120b"
 
-    MAX_CHARS_PER_CHUNK = 30_000
-    MAX_SENTENCES_PER_CHUNK = 200
+    MAX_CHARS_PER_CHUNK = 12_000
+    MAX_SENTENCES_PER_CHUNK = 80
 
     chunks = []
     cur_start = 0
@@ -117,6 +117,8 @@ def translate_full_transcript(sentences, src, targ, groq_api, groq_model=None):
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
+                    reasoning_effort="low",
+                    max_completion_tokens=32768,
                 )
                 raw = (completion.choices[0].message.content or "").strip()
                 parsed = json.loads(raw)

@@ -487,7 +487,7 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
     import time
     prompt = f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
     if groq_api:
-        logger.info(f"Translating with Groq API: {groq_api}")
+        logger.info("Translating with Groq API")
         client = Groq(api_key=groq_api)
         model = groq_model or "openai/gpt-oss-120b"
         last_err = None
@@ -496,6 +496,7 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
                 completion = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
+                    reasoning_effort="low",
                 )
                 translation = completion.choices[0].message.content.strip()
                 time.sleep(.3)  # avoid rate limits
@@ -678,10 +679,12 @@ def translate_full_transcript(sentences: list,
         return sentences
     model = groq_model or "openai/gpt-oss-120b"
 
-    # Chunking heuristic — stay well under gpt-oss-120b's 131k context and 65k
-    # completion cap, and polite vs Groq TPM. chars/3.5 ≈ tokens for English.
-    MAX_CHARS_PER_CHUNK = 30_000   # ≈ 9k input tokens
-    MAX_SENTENCES_PER_CHUNK = 200
+    # Chunking heuristic — gpt-oss-120b is a reasoning model on Groq; it
+    # burns output budget on internal reasoning before emitting JSON, so
+    # output cap matters more than context. Keep chunks small enough that
+    # the JSON response fits comfortably even after reasoning overhead.
+    MAX_CHARS_PER_CHUNK = 12_000     # ≈ 3.5k input tokens
+    MAX_SENTENCES_PER_CHUNK = 80     # → ~6-10k output tokens worst case
 
     chunks = []
     cur_start = 0
@@ -713,6 +716,8 @@ def translate_full_transcript(sentences: list,
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
+                    reasoning_effort="low",
+                    max_completion_tokens=32768,
                 )
                 raw = (completion.choices[0].message.content or "").strip()
                 parsed = _json.loads(raw)

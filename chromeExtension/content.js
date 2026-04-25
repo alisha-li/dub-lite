@@ -32,8 +32,41 @@ document.addEventListener("keydown", function(e) {
   });
 });
 
-// Mute YouTube and play the dubbed audio synced to the video's currentTime.
+// --- Dub audio playback + cleanup ---
+// YouTube is a SPA: navigating to another video doesn't reload content.js, so
+// the old <audio> element + listeners stick around. We track them and tear
+// them down when the user navigates, and also when a fresh dub starts.
 var dubAudio = null;
+var attachedVideo = null;
+var videoHandlers = null;
+var activePollInterval = null;
+
+function cleanupDub() {
+  if (activePollInterval !== null) {
+    clearInterval(activePollInterval);
+    activePollInterval = null;
+  }
+  if (dubAudio) {
+    try { dubAudio.pause(); } catch (e) {}
+    dubAudio.src = "";
+    dubAudio = null;
+  }
+  if (attachedVideo && videoHandlers) {
+    attachedVideo.removeEventListener("play", videoHandlers.play);
+    attachedVideo.removeEventListener("pause", videoHandlers.pause);
+    attachedVideo.removeEventListener("seeked", videoHandlers.seeked);
+    attachedVideo.removeEventListener("ratechange", videoHandlers.ratechange);
+    try { attachedVideo.muted = false; } catch (e) {}
+  }
+  attachedVideo = null;
+  videoHandlers = null;
+}
+
+// YouTube dispatches this on SPA navigation (back/forward, sidebar click, etc.)
+window.addEventListener("yt-navigate-start", cleanupDub);
+window.addEventListener("yt-navigate-finish", cleanupDub);
+// Fallback: catch manual history changes just in case
+window.addEventListener("popstate", cleanupDub);
 
 function playDub(audioUrl) {
   var video = document.querySelector("video");
@@ -42,33 +75,36 @@ function playDub(audioUrl) {
     return;
   }
 
-  // Clean up any previous dub
-  if (dubAudio) {
-    dubAudio.pause();
-    dubAudio.src = "";
-  }
+  // Tear down any existing dub state before attaching a new one
+  cleanupDub();
 
   dubAudio = new Audio(audioUrl);
   dubAudio.preload = "auto";
-
   video.muted = true;
 
-  // Seek audio to match video on every sync event
   function syncTime() {
-    if (Math.abs(dubAudio.currentTime - video.currentTime) > 0.3) {
+    if (dubAudio && Math.abs(dubAudio.currentTime - video.currentTime) > 0.3) {
       dubAudio.currentTime = video.currentTime;
     }
   }
 
-  video.addEventListener("play", function() {
-    syncTime();
-    dubAudio.play().catch(function(e) { console.error("[dub-lite] play failed:", e); });
-  });
-  video.addEventListener("pause", function() { dubAudio.pause(); });
-  video.addEventListener("seeked", syncTime);
-  video.addEventListener("ratechange", function() { dubAudio.playbackRate = video.playbackRate; });
+  videoHandlers = {
+    play: function() {
+      if (!dubAudio) return;
+      syncTime();
+      dubAudio.play().catch(function(e) { console.error("[dub-lite] play failed:", e); });
+    },
+    pause: function() { if (dubAudio) dubAudio.pause(); },
+    seeked: syncTime,
+    ratechange: function() { if (dubAudio) dubAudio.playbackRate = video.playbackRate; },
+  };
 
-  // Start immediately if video is already playing
+  video.addEventListener("play", videoHandlers.play);
+  video.addEventListener("pause", videoHandlers.pause);
+  video.addEventListener("seeked", videoHandlers.seeked);
+  video.addEventListener("ratechange", videoHandlers.ratechange);
+  attachedVideo = video;
+
   if (!video.paused) {
     syncTime();
     dubAudio.play().catch(function(e) { console.error("[dub-lite] play failed:", e); });
@@ -78,7 +114,11 @@ function playDub(audioUrl) {
 }
 
 function pollJob(jobId) {
-  var interval = setInterval(function() {
+  // Cancel any in-flight poll from a previous dub
+  if (activePollInterval !== null) {
+    clearInterval(activePollInterval);
+  }
+  activePollInterval = setInterval(function() {
     chrome.runtime.sendMessage({
       type: "poll-job",
       job_id: jobId,
@@ -92,13 +132,15 @@ function pollJob(jobId) {
       console.log("[dub-lite] status:", job.status, "progress:", job.progress + "%", job.stage || "");
 
       if (job.status === "completed") {
-        clearInterval(interval);
+        clearInterval(activePollInterval);
+        activePollInterval = null;
         console.log("[dub-lite] DONE! download URL:", job.output_url);
         playDub(job.output_url);
       } else if (job.status === "failed") {
-        clearInterval(interval);
+        clearInterval(activePollInterval);
+        activePollInterval = null;
         console.error("[dub-lite] job failed:", job.error);
       }
     });
-  }, 3000); // poll every 3 seconds
+  }, 3000);
 }
