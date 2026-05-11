@@ -228,14 +228,26 @@ def spaces_presigned_get(object_key, expires_in=3600):
     )
 
 
-def spawn_modal_dub(audio_url, target_lang, job_id):
-    """Spawn the Modal audio dubbing pipeline. Returns modal call object_id."""
+def spawn_modal_dub(audio_url, target_lang, job_id, provider="groq", groq_api_override=None, gemini_api_override=None):
+    """Spawn the Modal audio dubbing pipeline. Returns modal call object_id.
+
+    provider: 'groq' | 'gemini' | 'helsinki'. Selects translation backend.
+    *_override: optional API keys from caller (mac app config); fall back to env.
+    """
     import modal
     run_pipeline = modal.Function.from_name(MODAL_APP_NAME, MODAL_FN_NAME)
 
-    # Match what api/app.py does: default to Groq gpt-oss-120b using env GROQ_API_KEY
-    groq_api = (os.environ.get("GROQ_API_KEY") or "").strip() or None
+    groq_api = (groq_api_override or os.environ.get("GROQ_API_KEY") or "").strip() or None
+    gemini_api = (gemini_api_override or os.environ.get("GEMINI_API_KEY") or "").strip() or None
     mistral_api = (os.environ.get("MISTRAL_API_KEY") or "").strip() or None
+
+    if provider == "groq":
+        gemini_api = None  # force Groq path
+    elif provider == "gemini":
+        groq_api = None  # force Gemini path
+    elif provider == "helsinki":
+        groq_api = None
+        gemini_api = None  # both None → pipeline falls back to MarianMT/Helsinki
 
     call = run_pipeline.spawn(
         job_id=job_id,
@@ -243,6 +255,7 @@ def spawn_modal_dub(audio_url, target_lang, job_id):
         targ=target_lang,
         mistral_api=mistral_api,
         groq_api=groq_api,
+        gemini_api=gemini_api,
         groq_model="openai/gpt-oss-120b" if groq_api else None,
         translation_mode="full_transcript",
     )
@@ -286,6 +299,9 @@ def handle_dub_url(message):
     """Main flow: download → upload to Spaces → spawn Modal → return job_id."""
     url = message.get("url")
     target_lang = message.get("target_lang", "zh")
+    provider = message.get("provider", "groq")
+    groq_api_override = message.get("groq_api")
+    gemini_api_override = message.get("gemini_api")
     if not url:
         return {"error": "no URL provided"}
 
@@ -301,7 +317,12 @@ def handle_dub_url(message):
         # 3. Presigned GET URL for Modal to download
         audio_url = spaces_presigned_get(object_key, expires_in=3600)
         # 4. Spawn Modal pipeline
-        modal_call_id = spawn_modal_dub(audio_url, target_lang, job_id)
+        modal_call_id = spawn_modal_dub(
+            audio_url, target_lang, job_id,
+            provider=provider,
+            groq_api_override=groq_api_override,
+            gemini_api_override=gemini_api_override,
+        )
         # 5. Save state so subsequent polls can find this
         save_job_state(job_id, {
             "modal_call_id": modal_call_id,
