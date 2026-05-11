@@ -21,13 +21,8 @@ const saveSettingsBtn = document.getElementById("save-settings-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 const settingsStatus = document.getElementById("settings-status");
 
-const modalIdInput = document.getElementById("modal-id");
-const modalSecretInput = document.getElementById("modal-secret");
-const groqApiInput = document.getElementById("groq-api");
-const geminiApiInput = document.getElementById("gemini-api");
+const apiBaseInput = document.getElementById("api-base");
 const defaultLangSelect = document.getElementById("default-lang");
-const groqKeyRow = document.getElementById("groq-key-row");
-const geminiKeyRow = document.getElementById("gemini-key-row");
 
 let pollTimer = null;
 
@@ -97,8 +92,9 @@ function pollJob(jobId) {
       }
       const pct = resp.progress || 0;
       const stage = resp.stage || resp.status || "Processing…";
-      const isDone = resp.status === "completed";
-      const isFail = resp.status === "failed";
+      const status = (resp.status || "").toLowerCase();
+      const isDone = status === "completed";
+      const isFail = status === "failed";
 
       if (isDone) {
         showProgress("Done", 100, { done: true });
@@ -168,28 +164,10 @@ function showPanel(which) {
   }
 }
 
-function updateProviderKeyVisibility() {
-  const selected = document.querySelector("input[name='provider']:checked");
-  const provider = selected ? selected.value : "groq";
-  groqKeyRow.style.display = provider === "groq" ? "" : "none";
-  geminiKeyRow.style.display = provider === "gemini" ? "" : "none";
-}
-
 async function loadSettings() {
   const cfg = await window.dub.loadSettings();
-  modalIdInput.value = cfg.modal_token_id || "";
-  modalSecretInput.value = cfg.modal_token_secret || "";
-  groqApiInput.value = cfg.groq_api || "";
-  geminiApiInput.value = cfg.gemini_api || "";
+  apiBaseInput.value = cfg.api_base || "";
   defaultLangSelect.value = cfg.default_target_lang || "zh";
-
-  const provider = cfg.provider || "groq";
-  document.querySelectorAll("input[name='provider']").forEach((el) => {
-    el.checked = el.value === provider;
-  });
-  updateProviderKeyVisibility();
-
-  // Apply default lang to main dropdown
   langSelect.value = cfg.default_target_lang || "zh";
 }
 
@@ -205,35 +183,21 @@ cancelSettingsBtn.addEventListener("click", () => {
   showPanel("main");
 });
 
-document.querySelectorAll("input[name='provider']").forEach((el) => {
-  el.addEventListener("change", updateProviderKeyVisibility);
-});
-
 saveSettingsBtn.addEventListener("click", async () => {
   saveSettingsBtn.disabled = true;
   settingsStatus.textContent = "Saving…";
   settingsStatus.className = "settings-status";
 
-  const provider = document.querySelector("input[name='provider']:checked")?.value || "groq";
   const cfg = {
-    modal_token_id: modalIdInput.value.trim(),
-    modal_token_secret: modalSecretInput.value.trim(),
-    provider,
-    groq_api: groqApiInput.value.trim(),
-    gemini_api: geminiApiInput.value.trim(),
+    api_base: apiBaseInput.value.trim() || "http://159.89.182.232",
     default_target_lang: defaultLangSelect.value,
   };
 
   try {
-    const result = await window.dub.saveSettings(cfg);
-    if (result.modalError) {
-      settingsStatus.textContent = `Saved, but Modal token failed: ${result.modalError}`;
-      settingsStatus.className = "settings-status err";
-    } else {
-      settingsStatus.textContent = "Saved.";
-      settingsStatus.className = "settings-status ok";
-      langSelect.value = cfg.default_target_lang;
-    }
+    await window.dub.saveSettings(cfg);
+    settingsStatus.textContent = "Saved.";
+    settingsStatus.className = "settings-status ok";
+    langSelect.value = cfg.default_target_lang;
   } catch (err) {
     settingsStatus.textContent = `Error: ${err.message || err}`;
     settingsStatus.className = "settings-status err";

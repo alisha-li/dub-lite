@@ -58,9 +58,23 @@ def _get_spaces_client():
         config=Config(signature_version="s3v4"),
     )
 
+_VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov", ".avi")
+_AUDIO_EXTS = (".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus")
+_CONTENT_TYPES = {
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime", ".avi": "video/x-msvideo",
+    ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+    ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".opus": "audio/opus",
+}
+
+
 @app.post("/api/upload-url")
 async def get_upload_url(filename: Optional[str] = Form("video.mp4")):
-    """Returns a presigned PUT URL for direct upload to Spaces, plus the object key."""
+    """Returns a presigned PUT URL for direct upload to Spaces, plus the object key.
+
+    Accepts video and audio filenames. Defaults to .mp4 for unknown extensions.
+    """
     client = _get_spaces_client()
     if not client:
         raise HTTPException(status_code=503, detail="Spaces not configured")
@@ -68,19 +82,24 @@ async def get_upload_url(filename: Optional[str] = Form("video.mp4")):
     if not bucket:
         raise HTTPException(status_code=503, detail="SPACES_BUCKET not set")
     safe_name = os.path.basename(filename or "video.mp4").replace("..", "")
-    if not safe_name.lower().endswith((".mp4", ".webm", ".mkv", ".mov", ".avi")):
+    lower = safe_name.lower()
+    allowed = _VIDEO_EXTS + _AUDIO_EXTS
+    if not lower.endswith(allowed):
         safe_name = f"{safe_name}.mp4" if "." not in safe_name else "video.mp4"
+        lower = safe_name.lower()
+    ext = next((e for e in allowed if lower.endswith(e)), ".mp4")
+    content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
     object_key = f"uploads/{uuid.uuid4()}/{safe_name}"
     try:
         url = client.generate_presigned_url(
             "put_object",
-            Params={"Bucket": bucket, "Key": object_key, "ContentType": "video/mp4"},
+            Params={"Bucket": bucket, "Key": object_key, "ContentType": content_type},
             ExpiresIn=3600,
         )
     except ClientError as e:
         logger.exception("Failed to generate presigned URL")
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return {"upload_url": url, "object_key": object_key}
+    return {"upload_url": url, "object_key": object_key, "content_type": content_type}
 
 
 @app.get("/")
@@ -179,7 +198,8 @@ async def create_job(
 
 @app.post("/api/jobs/audio")
 async def create_audio_job(
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    spaces_object_key: Optional[str] = Form(None),
     target_language: str = Form("zh"),
     groq_api: Optional[str] = Form(None),
     groq_model: Optional[str] = Form(None),
@@ -188,19 +208,27 @@ async def create_audio_job(
     mistral_api: Optional[str] = Form(None),
     translation_mode: Optional[str] = Form("full_transcript"),
 ):
-    """Audio-only dubbing job for the Chrome extension.
-    Accepts an audio file, uploads to Spaces, spawns the audio pipeline on Modal.
+    """Audio-only dubbing job for the Chrome extension / Mac app.
+
+    Two modes:
+      - spaces_object_key: client has already uploaded audio via presigned PUT
+      - file: legacy direct multipart upload (kept for backward compat)
     """
     job_id = str(uuid.uuid4())
 
-    # Upload audio to Spaces
-    client = _get_spaces_client()
-    bucket = os.environ.get("SPACES_BUCKET")
-    if not client or not bucket:
-        raise HTTPException(status_code=503, detail="Spaces not configured")
-    object_key = f"uploads/{job_id}/{file.filename}"
-    file_bytes = await file.read()
-    client.put_object(Bucket=bucket, Key=object_key, Body=file_bytes, ContentType="audio/mpeg")
+    if spaces_object_key and spaces_object_key.strip():
+        object_key = spaces_object_key.strip()
+    elif file is not None:
+        client = _get_spaces_client()
+        bucket = os.environ.get("SPACES_BUCKET")
+        if not client or not bucket:
+            raise HTTPException(status_code=503, detail="Spaces not configured")
+        object_key = f"uploads/{job_id}/{file.filename}"
+        file_bytes = await file.read()
+        client.put_object(Bucket=bucket, Key=object_key, Body=file_bytes, ContentType="audio/mpeg")
+    else:
+        raise HTTPException(status_code=400, detail="Either file or spaces_object_key is required")
+
     audio_url = _get_spaces_presigned_get_url(object_key)
 
     job_data = {

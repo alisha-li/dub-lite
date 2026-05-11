@@ -162,9 +162,7 @@
       .dot.ok { background: #30d158; }
       .dot.err { background: #ff453a; }
 
-      .panel {
-        display: none;
-      }
+      .panel { display: none; }
       .panel.visible { display: block; }
       .settings-note {
         font-size: 11px;
@@ -188,20 +186,13 @@
       }
       .settings-status.ok { color: #30d158; }
       .settings-status.err { color: #ff453a; }
-      .provider-options {
-        display: flex;
-        gap: 12px;
-      }
-      .provider-options label {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        text-transform: none;
-        letter-spacing: normal;
-        font-size: 13px;
+      .plan-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        background: #2c2c2e;
+        border-radius: 999px;
+        font-size: 12px;
         color: #f2f2f7;
-        font-weight: 400;
-        cursor: pointer;
       }
     </style>
   </head>
@@ -255,33 +246,11 @@
     </div>
 
     <div id="settings-panel" class="panel">
-      <div class="settings-section-title">Modal account</div>
+      <div class="settings-section-title">Account</div>
       <div class="row">
-        <label for="modal-id">Token ID</label>
-        <input id="modal-id" type="text" placeholder="ak-..." />
-        <div class="settings-note">Get from modal.com/settings/tokens. Saved to ~/.modal.toml.</div>
-      </div>
-      <div class="row">
-        <label for="modal-secret">Token secret</label>
-        <input id="modal-secret" type="password" placeholder="as-..." />
-      </div>
-
-      <div class="settings-section-title">Translation</div>
-      <div class="row">
-        <label>Provider</label>
-        <div class="provider-options">
-          <label><input type="radio" name="provider" value="groq" /> Groq (fast)</label>
-          <label><input type="radio" name="provider" value="gemini" /> Gemini (quality)</label>
-          <label><input type="radio" name="provider" value="helsinki" /> Helsinki (free, offline)</label>
-        </div>
-      </div>
-      <div class="row" id="groq-key-row">
-        <label for="groq-api">Groq API key</label>
-        <input id="groq-api" type="password" placeholder="gsk_..." />
-      </div>
-      <div class="row" id="gemini-key-row">
-        <label for="gemini-api">Gemini API key</label>
-        <input id="gemini-api" type="password" placeholder="AIza..." />
+        <label>Plan</label>
+        <div><span class="plan-badge">Free Beta</span></div>
+        <div class="settings-note">Subscription management coming soon.</div>
       </div>
 
       <div class="settings-section-title">Defaults</div>
@@ -297,6 +266,13 @@
           <option value="it">Italian (it)</option>
           <option value="pt">Portuguese (pt)</option>
         </select>
+      </div>
+
+      <div class="settings-section-title">Advanced</div>
+      <div class="row">
+        <label for="api-base">API server URL</label>
+        <input id="api-base" type="text" placeholder="http://159.89.182.232" />
+        <div class="settings-note">Leave default unless you're running a local API server.</div>
       </div>
 
       <div class="actions">

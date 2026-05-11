@@ -12,11 +12,7 @@ const CONFIG_DIR = path.join(
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const DEFAULT_CONFIG = {
-  modal_token_id: "",
-  modal_token_secret: "",
-  provider: "groq",
-  groq_api: "",
-  gemini_api: "",
+  api_base: "http://159.89.182.232",
   default_target_lang: "zh",
 };
 
@@ -38,24 +34,6 @@ function saveConfig(cfg) {
     mode: 0o600,
   });
   return sanitized;
-}
-
-function writeModalToken(tokenId, tokenSecret) {
-  if (!tokenId || !tokenSecret) return { skipped: true };
-  return new Promise((resolve, reject) => {
-    const proc = spawn(
-      "/Users/alishali/.pyenv/versions/3.12.0/bin/python3",
-      ["-m", "modal", "token", "set", "--token-id", tokenId, "--token-secret", tokenSecret],
-      { stdio: ["ignore", "pipe", "pipe"] }
-    );
-    let stderr = "";
-    proc.stderr.on("data", (c) => (stderr += c.toString()));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) resolve({ ok: true });
-      else reject(new Error(`modal token set exit ${code}: ${stderr}`));
-    });
-  });
 }
 
 const SIDECAR_PYTHON = "/Users/alishali/.pyenv/versions/3.12.0/bin/python3";
@@ -131,36 +109,20 @@ ipcMain.handle("sidecar:ping", async () => {
   return { response, latencyMs: Date.now() - start };
 });
 
-ipcMain.handle("sidecar:dub", async (_event, { url, targetLang }) => {
-  const cfg = loadConfig();
-  return callSidecar({
-    type: "dub-url",
-    url,
-    target_lang: targetLang,
-    provider: cfg.provider,
-    groq_api: cfg.groq_api || undefined,
-    gemini_api: cfg.gemini_api || undefined,
-  });
-});
+ipcMain.handle("sidecar:dub", async (_event, { url, targetLang }) =>
+  callSidecar({ type: "dub-url", url, target_lang: targetLang })
+);
+
+ipcMain.handle("sidecar:poll", async (_event, { jobId }) =>
+  callSidecar({ type: "poll-job", job_id: jobId })
+);
 
 ipcMain.handle("settings:load", async () => loadConfig());
 
 ipcMain.handle("settings:save", async (_event, cfg) => {
   const saved = saveConfig(cfg);
-  let modalResult = { skipped: true };
-  try {
-    if (cfg.modal_token_id && cfg.modal_token_secret) {
-      modalResult = await writeModalToken(cfg.modal_token_id, cfg.modal_token_secret);
-    }
-  } catch (err) {
-    return { saved, modalError: err.message };
-  }
-  return { saved, modal: modalResult };
+  return { saved };
 });
-
-ipcMain.handle("sidecar:poll", async (_event, { jobId }) =>
-  callSidecar({ type: "poll-job", job_id: jobId })
-);
 
 app.whenReady().then(createWindow);
 
