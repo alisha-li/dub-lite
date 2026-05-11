@@ -679,12 +679,12 @@ def translate_full_transcript(sentences: list,
         return sentences
     model = groq_model or "openai/gpt-oss-120b"
 
-    # Chunking heuristic — gpt-oss-120b is a reasoning model on Groq; it
-    # burns output budget on internal reasoning before emitting JSON, so
-    # output cap matters more than context. Keep chunks small enough that
-    # the JSON response fits comfortably even after reasoning overhead.
-    MAX_CHARS_PER_CHUNK = 12_000     # ≈ 3.5k input tokens
-    MAX_SENTENCES_PER_CHUNK = 80     # → ~6-10k output tokens worst case
+    # Chunking heuristic — Groq counts max_completion_tokens against TPM, so
+    # request "weight" = input + max_completion. Free tier TPM is 8000 for
+    # gpt-oss-120b; Dev tier is ~30k. We size for the free tier so a single
+    # request fits under 8k, with one chunk per minute pacing.
+    MAX_CHARS_PER_CHUNK = 4_000      # ≈ 1.2k input tokens
+    MAX_SENTENCES_PER_CHUNK = 30     # → ~3-4k output tokens worst case
 
     chunks = []
     cur_start = 0
@@ -704,7 +704,16 @@ def translate_full_transcript(sentences: list,
     translated_by_idx = {}
     client = Groq(api_key=groq_api)
 
+    # Pace chunks vs Groq free-tier TPM (8k tokens/min). Each chunk request
+    # weighs ~5k tokens (input + max_completion reservation), so wait ~45s
+    # between chunks. Skip for the first chunk.
+    INTER_CHUNK_SLEEP_SEC = 45
+
     for chunk_i, (start, end) in enumerate(chunks):
+        if chunk_i > 0:
+            logger.info(f"Sleeping {INTER_CHUNK_SLEEP_SEC}s before chunk {chunk_i+1}/{len(chunks)} (TPM pacing)")
+            time.sleep(INTER_CHUNK_SLEEP_SEC)
+
         chunk_sents = sentences[start:end]
         prompt = _build_full_transcript_prompt(chunk_sents, start, src, targ)
 
@@ -717,7 +726,7 @@ def translate_full_transcript(sentences: list,
                     messages=[{"role": "user", "content": prompt}],
                     response_format={"type": "json_object"},
                     reasoning_effort="low",
-                    max_completion_tokens=32768,
+                    max_completion_tokens=4096,
                 )
                 raw = (completion.choices[0].message.content or "").strip()
                 parsed = _json.loads(raw)
