@@ -1,7 +1,5 @@
 console.log("[dub-lite] content script loaded");
 
-var API_BASE = "https://dub-lite.alishali.info";
-
 // Press "q" to start dubbing the current video
 document.addEventListener("keydown", function(e) {
   if (e.key !== "q" || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
@@ -9,25 +7,21 @@ document.addEventListener("keydown", function(e) {
   var url = window.location.href;
   console.log("[dub-lite] starting dub for:", url);
 
-  // Step 1: Send URL to background → native host → yt-dlp → API
+  // Mac app calls Modal directly. No API server in the loop.
   chrome.runtime.sendMessage({
-    type: "download-audio",
+    type: "dub-url",
     url: url,
     target_lang: "zh",
-    api_base: API_BASE,
   }, function(response) {
     if (chrome.runtime.lastError) {
       console.error("[dub-lite] error:", chrome.runtime.lastError.message);
       return;
     }
-    if (response.error) {
-      console.error("[dub-lite] error:", response.error);
+    if (!response || response.error) {
+      console.error("[dub-lite] error:", response && response.error, response && response.traceback);
       return;
     }
-
-    console.log("[dub-lite] job created!", response.job_id, "audio size:", response.size);
-
-    // Step 2: Poll for progress
+    console.log("[dub-lite] job created!", response.job_id);
     pollJob(response.job_id);
   });
 });
@@ -57,15 +51,14 @@ function cleanupDub() {
     attachedVideo.removeEventListener("seeked", videoHandlers.seeked);
     attachedVideo.removeEventListener("ratechange", videoHandlers.ratechange);
     try { attachedVideo.muted = false; } catch (e) {}
+    try { attachedVideo.volume = 1; } catch (e) {}
   }
   attachedVideo = null;
   videoHandlers = null;
 }
 
-// YouTube dispatches this on SPA navigation (back/forward, sidebar click, etc.)
 window.addEventListener("yt-navigate-start", cleanupDub);
 window.addEventListener("yt-navigate-finish", cleanupDub);
-// Fallback: catch manual history changes just in case
 window.addEventListener("popstate", cleanupDub);
 
 function playDub(audioUrl) {
@@ -75,12 +68,23 @@ function playDub(audioUrl) {
     return;
   }
 
-  // Tear down any existing dub state before attaching a new one
   cleanupDub();
 
   dubAudio = new Audio(audioUrl);
   dubAudio.preload = "auto";
-  video.muted = true;
+
+  // YouTube uses MSE + custom player wiring. video.muted alone sometimes leaks
+  // through. Belt + suspenders: mute the element AND zero its volume AND click
+  // YouTube's own mute button if available.
+  function muteOriginal() {
+    try { video.muted = true; } catch (e) {}
+    try { video.volume = 0; } catch (e) {}
+  }
+  muteOriginal();
+  // Some YT updates reset .muted on play/seek events. Re-mute every animation
+  // frame for the first second to defeat that.
+  var muteGuard = setInterval(muteOriginal, 100);
+  setTimeout(function() { clearInterval(muteGuard); }, 2000);
 
   function syncTime() {
     if (dubAudio && Math.abs(dubAudio.currentTime - video.currentTime) > 0.3) {
@@ -114,7 +118,6 @@ function playDub(audioUrl) {
 }
 
 function pollJob(jobId) {
-  // Cancel any in-flight poll from a previous dub
   if (activePollInterval !== null) {
     clearInterval(activePollInterval);
   }
@@ -122,24 +125,24 @@ function pollJob(jobId) {
     chrome.runtime.sendMessage({
       type: "poll-job",
       job_id: jobId,
-      api_base: API_BASE,
     }, function(response) {
       if (!response || response.error) {
         console.error("[dub-lite] poll error:", response && response.error);
         return;
       }
-      var job = response.job;
-      console.log("[dub-lite] status:", job.status, "progress:", job.progress + "%", job.stage || "");
+      // New shape: poll-job returns {status, progress, stage, output_url?} directly
+      var status = response.status;
+      console.log("[dub-lite] status:", status, "progress:", response.progress + "%", response.stage || "");
 
-      if (job.status === "completed") {
+      if (status === "completed") {
         clearInterval(activePollInterval);
         activePollInterval = null;
-        console.log("[dub-lite] DONE! download URL:", job.output_url);
-        playDub(job.output_url);
-      } else if (job.status === "failed") {
+        console.log("[dub-lite] DONE! download URL:", response.output_url);
+        playDub(response.output_url);
+      } else if (status === "failed") {
         clearInterval(activePollInterval);
         activePollInterval = null;
-        console.error("[dub-lite] job failed:", job.error);
+        console.error("[dub-lite] job failed:", response.error);
       }
     });
   }, 3000);
