@@ -12,7 +12,7 @@ const CONFIG_DIR = path.join(
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const DEFAULT_CONFIG = {
-  api_base: "http://159.89.182.232",
+  api_base: "http://159.89.182.232:8000",
   default_target_lang: "zh",
 };
 

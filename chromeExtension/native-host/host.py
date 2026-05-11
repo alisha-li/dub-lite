@@ -38,7 +38,7 @@ os.environ["PATH"] = os.pathsep.join(extra_paths) + os.pathsep + os.environ.get(
 
 # Mac app config (api_base, default_target_lang). Single source of truth.
 CONFIG_PATH = os.path.expanduser("~/Library/Application Support/dub-lite/config.json")
-DEFAULT_API_BASE = "http://159.89.182.232"
+DEFAULT_API_BASE = "http://159.89.182.232:8000"
 
 # Per-call state persists job_id metadata so subsequent polls can find it.
 STATE_DIR = os.path.expanduser("~/Library/Application Support/dub-lite/jobs")
