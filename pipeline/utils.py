@@ -80,6 +80,23 @@ from types import SimpleNamespace
 
 _helsinki_cache = {}
 _translategemma_cache = {}  # (model, processor) for text-only path
+_sat_cache = {}  # wtpsplit SaT instance (loaded once per container, moved to GPU)
+
+
+def _get_sat():
+    """Load wtpsplit SaT once per container. Moved to CUDA half-precision
+    when available — sentence-boundary inference is ~3-5x faster on GPU.
+    """
+    if "model" not in _sat_cache:
+        from wtpsplit import SaT
+        sat = SaT("sat-12l-sm")
+        if torch.cuda.is_available():
+            try:
+                sat.half().to("cuda")
+            except Exception as e:
+                logger.warning(f"SaT GPU half() failed, falling back to CPU fp32: {e}")
+        _sat_cache["model"] = sat
+    return _sat_cache["model"]
 
 
 def _normalize_speaker_to_pyannote(speaker_id: str) -> str:
@@ -471,9 +488,7 @@ def create_sentences(segments_with_speakers: list):
         # seg = pysbd.Segmenter(language="en")
         # sentences = seg.segment(fullTextStr)
 
-        from wtpsplit import SaT
-        sat = SaT("sat-12l-sm")
-        # sat.half().to("cuda")
+        sat = _get_sat()
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
         
         word_idx = 0
