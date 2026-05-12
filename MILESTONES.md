@@ -76,7 +76,7 @@ Currently: Chrome ext → API server → Modal. Goal: Chrome ext → Mac native 
 
 **Human checkpoint:** dubbed audio plays — voice matches speaker? Lip sync within ±200ms? Emotion authentic?
 
-### Milestone 4 — Cold-start optimization
+### Milestone 4 — Cold-start optimization (in progress)
 Goal: cut Modal cold start from ~30s to <10s.
 
 **Approaches:**
@@ -87,6 +87,36 @@ Goal: cut Modal cold start from ~30s to <10s.
 - Avoid full `keep_warm=1` ($430/mo on T4) until revenue justifies
 
 **Measure:** time first-job-after-idle vs job-during-warm. Aim for ~10s cold delta.
+
+**Status (started 2026-05-11):**
+- ✅ `scaledown_window=900` set on `tts_worker`, `run_dubbing_pipeline`, `run_audio_dubbing_pipeline`
+- ✅ Cold-start timing logger added — every handler logs `[COLD-START] <name> container_age=Xs` on first call, `[WARM] ...` after
+- ✅ Cheap CPU-only `ping()` function added for optional warm-pinger (caller-driven, no schedule yet — flip to `schedule=modal.Cron("*/8 * * * *")` to enable Modal-side cron)
+- ✅ Dropped dead `faster-whisper` import (pipeline/main.py + image layer + debug_imports list)
+- ✅ Slimmed requirements.txt: removed celery stack (celery/amqp/billiard/kombu/vine/click-*), DB stack (alembic/SQLAlchemy/Mako), api-only (fastapi/starlette/uvicorn/python-multipart/redis), training-only (tensorboard*/optuna/coqui-tts-trainer/ctranslate2), observability (opentelemetry-*), and ko-speech-tools
+- ✅ Deployed slim image (build 847s). debug_imports green: torch, torchaudio, transformers, TTS, df, pipeline.main all OK
+- ✅ `ping()` warm-reuse validated via SDK (3 calls in quick succession from deployed app):
+  - call1 4.71s wall, container_age=0.1s (cold container, image cached)
+  - call2 0.45s wall, container_age=0.7s (warm reuse → same container, age incremented)
+  - call3 0.18s wall, container_age=0.9s (warm reuse)
+  - → `scaledown_window=900` works; CPU container reuse confirmed
+- ✅ GPU pipeline cold/warm measured via `run_dubbing_pipeline` on WSJ Vail Resorts MP4 (sequential c1 then c2 spawn against deployed app):
+  - **c1** wall=859.3s (reused container from earlier YT-failed run; container_age=71.5s at handler entry — so module imports done but model loads fresh)
+  - **c2** wall=735.0s (full warm reuse; container_age=931.1s)
+  - **Δ = ~124s wall savings** on warm path — corresponds to XTTS + speechbrain model load on first call within container, cached after
+  - All 4 tts_worker containers also reused on c2 (`[WARM] tts_worker container_age=~860s`)
+  - Output uploaded to Spaces: `outputs/mark1-968ff0/dubbed.mp4`, `outputs/mark2-eefbc8/dubbed.mp4`
+- ⚠️ **Caveat:** true cold-cold not measured — c1 hit a recycled container (YT-failed test left it warm). For a true ~30s-or-more cold delta on a fresh container, wait past 900s idle window then re-run. Container_age instrumentation is post-`_MODULE_LOAD_TIME`; pre-import image-pull + python-boot + torch-import overhead is NOT in container_age — only reflected in caller wall time. To capture full cold-start cost, subtract average warm wall from first-ever-after-idle wall.
+
+**Outcome:** Phase A + B shipped. scaledown_window verified at container level (CPU+GPU). Model-load amortization on warm = ~2 min savings per dub. Quantifying full image-pull cold cost left for next idle-cycle test.
+
+**Phase D (2026-05-11) — Bake model weights into image:**
+- `download_models()` runs during build via `.run_function(download_models, secrets=[modal.Secret.from_name("dub-env")])`
+- Baked: XTTS v2, SpeechBrain emotion (savedir=`/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP`), audio_separator 2_HP-UVR.pth (model_file_dir=`/root/baked_models/audio_separator`), DeepFilterNet, wtpsplit sat-12l-sm
+- Skipped (audited as unused / API): PyAnnote (commented), Voxtral (API), faster-whisper (dead), MarianMT/TranslateGemma (fallback)
+- Removed runtime `TORCH_HOME`/`HF_HOME` overrides in all 4 handlers — baked weights live at default HF/TTS paths (`/root/.cache/huggingface`, `/root/.local/share/tts`)
+- Loader changes in `pipeline/main.py`: both `Separator()` calls now pass `model_file_dir`; both `foreign_class()` calls now pass `savedir`
+- Deploy 675s. Verify dub (WSJ MP4 cold, fresh worker): wall=1026s — slower than pre-bake warm because image got ~2-5GB larger and worker pulled fresh. SpeechBrain logs confirm baked-path symlinks: `Using symlink found at '/root/baked_models/...'`. Zero CDN fetches at runtime → CDN-flake crash class eliminated.
 
 ### ~~Milestone 5 — Whisper turbo swap~~ — N/A
 Pipeline uses **Mistral Voxtral** for transcription (`voxtral-mini-2602`, with built-in diarization), not Faster-Whisper. The `from faster_whisper import WhisperModel` line in pipeline/main.py:16 is dead code — model never instantiated. Whisper turbo swap moot. Voxtral is the transcription engine.

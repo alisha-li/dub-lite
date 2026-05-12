@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from pydub import AudioSegment
-from faster_whisper import WhisperModel
 import pickle
 from TTS.api import TTS
 from audio_separator.separator import Separator
@@ -258,6 +257,7 @@ class YTDubPipeline:
         # 7a. Classify emotions for all segments (fast, runs locally)
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                                   savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
                                    pymodule_file="custom_interface.py",
                                    classname="CustomEncoderWav2vec2Classifier",
                                    run_opts={"device": device.type})
@@ -397,7 +397,7 @@ class YTDubPipeline:
 
         # 11. Separate background audio
         report("Separating background audio", 90)
-        separator = Separator()
+        separator = Separator(model_file_dir="/root/baked_models/audio_separator")
         separator.load_model(model_filename='2_HP-UVR.pth')
         background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
         dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")
@@ -574,6 +574,7 @@ class YTDubPipeline:
         # 7a. Classify emotions for all segments (fast, runs locally)
         n_segments = len(final_segments)
         classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                                   savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
                                    pymodule_file="custom_interface.py",
                                    classname="CustomEncoderWav2vec2Classifier",
                                    run_opts={"device": device.type})
@@ -688,7 +689,7 @@ class YTDubPipeline:
 
         # 10. Separate background audio
         report("Separating background audio", 90)
-        separator = Separator()
+        separator = Separator(model_file_dir="/root/baked_models/audio_separator")
         separator.load_model(model_filename='2_HP-UVR.pth')
         background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
         dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")

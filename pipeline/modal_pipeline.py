@@ -1,9 +1,82 @@
 import modal
 import os
 import sys
+import time
 import traceback
 import boto3
 from botocore.config import Config
+
+_MODULE_LOAD_TIME = time.time()
+_COLD_LOGGED = set()
+
+BAKED_AUDIO_SEP_DIR = "/root/baked_models/audio_separator"
+BAKED_SPEECHBRAIN_EMOTION_DIR = "/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP"
+
+
+def _log_cold_start(handler_name: str):
+    """Log container-age delta on first invocation per handler. Cold-start indicator."""
+    delta = time.time() - _MODULE_LOAD_TIME
+    if handler_name not in _COLD_LOGGED:
+        print(f"[COLD-START] {handler_name} first-call container_age={delta:.1f}s", flush=True)
+        _COLD_LOGGED.add(handler_name)
+    else:
+        print(f"[WARM] {handler_name} container_age={delta:.1f}s", flush=True)
+
+
+def download_models():
+    """Pre-download every model the pipeline uses at runtime.
+
+    Executes during image build via `.run_function()`. Weights end up baked
+    into the image layer at:
+      - XTTS v2:        /root/.local/share/tts/...        (TTS default)
+      - HF caches:      /root/.cache/huggingface/...      (HF default)
+      - audio_separator /root/baked_models/audio_separator/2_HP-UVR.pth
+      - speechbrain:    /root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP/
+
+    Runtime handlers MUST NOT override TORCH_HOME / HF_HOME — defaults already
+    point at the baked locations. Pipeline loaders for audio_separator and
+    speechbrain pass the explicit savedir / model_file_dir paths above.
+
+    Skipped (audited as unused or API-only):
+      - PyAnnote diarization (commented out — using Mistral)
+      - Mistral Voxtral (API-only, no download)
+      - faster-whisper (dead code per Milestone 5)
+      - MarianMT Helsinki (fallback path, commented out)
+    """
+    import os
+    os.environ["COQUI_TOS_AGREED"] = "1"
+    os.environ["MPLBACKEND"] = "Agg"
+    os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
+    os.makedirs("/tmp/matplotlib", exist_ok=True)
+
+    print("[bake] XTTS v2...", flush=True)
+    from TTS.api import TTS
+    TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
+
+    print("[bake] SpeechBrain emotion classifier...", flush=True)
+    from speechbrain.inference.interfaces import foreign_class
+    foreign_class(
+        source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+        savedir=BAKED_SPEECHBRAIN_EMOTION_DIR,
+        pymodule_file="custom_interface.py",
+        classname="CustomEncoderWav2vec2Classifier",
+    )
+
+    print("[bake] audio_separator 2_HP-UVR.pth...", flush=True)
+    from audio_separator.separator import Separator
+    sep = Separator(model_file_dir=BAKED_AUDIO_SEP_DIR, output_dir="/tmp")
+    sep.load_model(model_filename="2_HP-UVR.pth")
+
+    print("[bake] DeepFilterNet...", flush=True)
+    from df.enhance import init_df
+    init_df()
+
+    print("[bake] wtpsplit sat-12l-sm...", flush=True)
+    from wtpsplit import SaT
+    SaT("sat-12l-sm")
+
+    print("[bake] done.", flush=True)
+
 
 app = modal.App("dub-lite")
 
@@ -14,7 +87,7 @@ image = (
     .env({"PATH": "/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin"})
     .pip_install("torch")          # Layer 1: just torch
     .pip_install("torchaudio", "torchvision")  # Layer 2
-    .pip_install("transformers", "faster-whisper")  # Layer 3
+    .pip_install("transformers")  # Layer 3
     .pip_install("speechbrain", "coqui-tts")  # Layer 4
     # .pip_install("pyannote-audio", "pyannote-pipeline")  # Layer 5
     .pip_install_from_requirements("requirements.txt")  # Layer 6: remaining
@@ -37,6 +110,11 @@ image = (
     .run_commands("python3 /root/pipeline/patch_torchaudio_backend.py")
 )
 
+# Bake model weights into the image layer. MUST come after all pip_install /
+# patch_torchaudio_backend / pipeline dir steps so download_models() can import
+# TTS / speechbrain / audio_separator / df / wtpsplit.
+image = image.run_function(download_models, secrets=[modal.Secret.from_name("dub-env")])
+
 vol = modal.Volume.from_name("dub-lite-volume")
 progress_dict = modal.Dict.from_name("dub-lite-progress", create_if_missing=True)
 
@@ -47,8 +125,8 @@ def debug_imports():
     import os
     import sys
 
-    os.environ["TORCH_HOME"] = "/models/torch"
-    os.environ["HF_HOME"] = "/models/huggingface"
+    # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
+    # /root/.cache/huggingface and /root/.local/share/tts in the image layer.
     os.environ["COQUI_TOS_AGREED"] = "1"
     os.environ["MPLBACKEND"] = "Agg"
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
@@ -59,7 +137,6 @@ def debug_imports():
         ("torch", lambda: __import__("torch")),
         ("torchaudio", lambda: __import__("torchaudio")),
         ("transformers", lambda: __import__("transformers")),
-        ("faster_whisper", lambda: __import__("faster_whisper")),
         ("TTS", lambda: __import__("TTS")),
         # ("pyannote.audio", lambda: __import__("pyannote.audio")),  # commented out – using Mistral for diarization
         ("df", lambda: __import__("df")),
@@ -83,6 +160,7 @@ NUM_TTS_WORKERS = 4  # number of parallel GPU containers for TTS
     gpu="A10G",
     memory=65536,
     timeout=1800,
+    scaledown_window=900,
     volumes={"/models": vol},
     secrets=[modal.Secret.from_name("dub-env")],
 )
@@ -98,12 +176,13 @@ def tts_worker(batch: dict) -> dict:
     }
     Returns: {"wavs": {str(index): bytes}}  # generated WAV bytes keyed by segment index
     """
+    _log_cold_start("tts_worker")
     import io
     import torch
     from pydub import AudioSegment
 
-    os.environ["TORCH_HOME"] = "/models/torch"
-    os.environ["HF_HOME"] = "/models/huggingface"
+    # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
+    # /root/.cache/huggingface and /root/.local/share/tts in the image layer.
     os.environ["COQUI_TOS_AGREED"] = "1"
     os.environ["MPLBACKEND"] = "Agg"
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
@@ -179,8 +258,9 @@ def _upload_to_spaces(local_path: str, job_id: str) -> str:
     image=image,
     gpu="A10G",
     memory=65536,
-    timeout = 3600,
-    volumes = {"/models": vol},
+    timeout=3600,
+    scaledown_window=900,
+    volumes={"/models": vol},
     secrets=[modal.Secret.from_name("dub-env"), modal.Secret.from_name("dub-spaces")],
 )
 def run_dubbing_pipeline(
@@ -205,9 +285,10 @@ def run_dubbing_pipeline(
 
     src accepts: presigned Spaces URL, YouTube URL, or local path.
     """
+    _log_cold_start("run_dubbing_pipeline")
 
-    os.environ["TORCH_HOME"] = "/models/torch"
-    os.environ["HF_HOME"] = "/models/huggingface"
+    # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
+    # /root/.cache/huggingface and /root/.local/share/tts in the image layer.
     os.environ["COQUI_TOS_AGREED"] = "1"
     os.environ["MPLBACKEND"] = "Agg"
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
@@ -276,6 +357,7 @@ def _upload_audio_to_spaces(audio_bytes: bytes, job_id: str) -> str:
     gpu="A10G",
     memory=65536,
     timeout=3600,
+    scaledown_window=900,
     volumes={"/models": vol},
     secrets=[modal.Secret.from_name("dub-env"), modal.Secret.from_name("dub-spaces")],
 )
@@ -292,10 +374,11 @@ def run_audio_dubbing_pipeline(
     translation_mode: str = "full_transcript",
 ):
     """Audio-only dubbing pipeline for the Chrome extension."""
+    _log_cold_start("run_audio_dubbing_pipeline")
     import requests as req
 
-    os.environ["TORCH_HOME"] = "/models/torch"
-    os.environ["HF_HOME"] = "/models/huggingface"
+    # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
+    # /root/.cache/huggingface and /root/.local/share/tts in the image layer.
     os.environ["COQUI_TOS_AGREED"] = "1"
     os.environ["MPLBACKEND"] = "Agg"
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
@@ -342,6 +425,21 @@ def run_audio_dubbing_pipeline(
     except Exception as e:
         tb = traceback.format_exc()
         raise RuntimeError(f"{e}\n\nTraceback:\n{tb}") from None
+
+
+@app.function(image=image, scaledown_window=900)
+def ping() -> dict:
+    """Cheap CPU-only warm-pinger. Keeps image+layer cache hot in Modal's worker pool.
+
+    Does NOT keep the GPU pipeline container warm — scaledown_window on the GPU
+    functions does that. Call this on cron (every 5-10 min) from the Mac app or
+    external scheduler to reduce image-pull cold starts on first GPU request.
+
+    To enable Modal-side cron schedule, change the decorator to:
+        @app.function(image=image, schedule=modal.Cron("*/8 * * * *"))
+    """
+    _log_cold_start("ping")
+    return {"ok": True, "container_age_s": round(time.time() - _MODULE_LOAD_TIME, 1)}
 
 
 @app.local_entrypoint()
