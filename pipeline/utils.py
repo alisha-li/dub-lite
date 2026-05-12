@@ -12,25 +12,19 @@ _YT_DLP_DOMAINS = ("youtube.com", "youtu.be", "vimeo.com", "dailymotion.com", "t
 # from pyannote.audio import Pipeline as PyannotePipeline
 
 # denoise_audio
-from df import config
-from df.enhance import enhance, init_df, load_audio, save_audio
-from df import utils as df_utils
+# df, wtpsplit, groq, gemini all lazy-imported inside their consuming functions
+# (get_denoiser, create_sentences, translate_*) — keeps cold-container module
+# load fast. torch + torchaudio stay top-level (used widely, must run patches
+# at module load before speechbrain/df load torchaudio).
 import torch
 import sys
 
 # create_sentences
 from collections import defaultdict
 # from nltk.tokenize import sent_tokenize
-from wtpsplit import SaT
 # import pysbd
 import logging
 logger = logging.getLogger(__name__)
-
-# translate
-from groq import Groq
-from google import genai as gemini
-from transformers import MarianMTModel, MarianTokenizer
-from transformers import pipeline
 
 # classify_emotion
 # torchaudio 2.8+ removed list_audio_backends – stub for SpeechBrain
@@ -71,7 +65,8 @@ def _torchaudio_info_soundfile(path, **kwargs):
 
 if not hasattr(torchaudio, "info") or torchaudio.info is None:
     torchaudio.info = _torchaudio_info_soundfile
-from speechbrain.inference.interfaces import foreign_class
+# speechbrain foreign_class lazy-imported inside classify_emotion / get_denoiser
+# callers — only the type annotation referenced it here.
 
 # adjust_audio
 import librosa
@@ -245,6 +240,7 @@ def segments_to_speaker_turns(segments: list) -> dict:
 def get_denoiser():
      # Initialize model
     print("Loading DeepFilterNet2 model...")
+    from df.enhance import init_df
     try:
         model, df, _ = init_df()
     except Exception as e:
@@ -254,18 +250,22 @@ def get_denoiser():
 
 def denoise_audio(input_path: str, output_path: str = None, model=None, df=None):
     """Denoise an audio file using DeepFilterNet2"""
+    from df import config
+    from df.enhance import enhance, load_audio, save_audio
+    from df import utils as df_utils
+
     if model is None or df is None:
         model, df = get_denoiser()
 
     if not os.path.exists(input_path):
         print(f"Error: Input file not found: {input_path}")
         return False
-    
+
     # Generate output path if not provided
     if output_path is None:
         base, ext = os.path.splitext(input_path)
         output_path = f"{base}_denoised{ext}"
-    
+
     # Load audio
     sr = config("sr", 48000, int, section="df")
     print(f"Loading audio from {input_path}...")
@@ -449,6 +449,7 @@ def create_sentences(segments_with_speakers: list):
         # seg = pysbd.Segmenter(language="en")
         # sentences = seg.segment(fullTextStr)
 
+        from wtpsplit import SaT
         sat = SaT("sat-12l-sm")
         # sat.half().to("cuda")
         sentences = sat.split(fullTextStr) # can even try lora if i find a video that needs it
@@ -488,6 +489,7 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
     prompt = f"""Context: "{before_context} {sentence} {after_context}" Correct transcription errors, if any. ONLY output {targ} translation of '{sentence}'."""
     if groq_api:
         logger.info("Translating with Groq API")
+        from groq import Groq
         client = Groq(api_key=groq_api)
         model = groq_model or "openai/gpt-oss-120b"
         last_err = None
@@ -512,6 +514,7 @@ def translate(sentence, before_context, after_context, src: str, targ: str, groq
     elif gemini_api:
         model = gemini_model or "gemini-3-flash-preview"
         logger.info(f"Translating with Gemini API: model={model}")
+        from google import genai as gemini
         client = gemini.Client(api_key=gemini_api)
         response = client.models.generate_content(
             model=model,
@@ -702,6 +705,7 @@ def translate_full_transcript(sentences: list,
     logger.info(f"Full-transcript translate: {len(sentences)} sentences → {len(chunks)} Groq chunk(s)")
 
     translated_by_idx = {}
+    from groq import Groq
     client = Groq(api_key=groq_api)
 
     # Pace chunks vs Groq free-tier TPM (8k tokens/min). Each chunk request
@@ -791,7 +795,7 @@ def translate_full_transcript(sentences: list,
     return sentences
 
 
-def classify_emotion(audio_path: str, classifier: foreign_class):
+def classify_emotion(audio_path: str, classifier):
     try:
         out_prob, score, index, text_lab = classifier.classify_file(audio_path)
         return text_lab[0]

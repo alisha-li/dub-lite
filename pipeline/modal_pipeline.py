@@ -106,7 +106,10 @@ image = (
         "hydra-colorlog", "hydra-optuna-sweeper",
     )
     .run_commands("pip install 'setuptools<78' && pip install --no-build-isolation --no-deps openai-whisper==20231117 && pip install tiktoken")
-    .run_commands("pip install --force-reinstall 'mistralai==1.12.4'")  # force correct version
+    # PyPI quarantined the `mistralai` package (status: quarantined, 0 versions
+    # available on the index). Install from GitHub source pinned to v1.12.4
+    # until the quarantine lifts. Pure-python SDK, no build-deps needed.
+    .run_commands("pip install --force-reinstall 'git+https://github.com/mistralai/client-python.git@v1.12.4'")
     .run_commands("python3 /root/pipeline/patch_torchaudio_backend.py")
 )
 
@@ -286,6 +289,8 @@ def run_dubbing_pipeline(
     src accepts: presigned Spaces URL, YouTube URL, or local path.
     """
     _log_cold_start("run_dubbing_pipeline")
+    # Push initial progress BEFORE heavy imports — frontend stops polling 0%.
+    progress_dict[job_id] = {"stage": "Container ready", "progress": 1}
 
     # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
     # /root/.cache/huggingface and /root/.local/share/tts in the image layer.
@@ -294,6 +299,8 @@ def run_dubbing_pipeline(
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
     sys.path.append("/root")
     sys.path.append("/root/pipeline")
+
+    progress_dict[job_id] = {"stage": "Loading pipeline modules", "progress": 2}
     from pipeline.main import YTDubPipeline
 
     # read from dub-env secret if not passed
@@ -375,6 +382,8 @@ def run_audio_dubbing_pipeline(
 ):
     """Audio-only dubbing pipeline for the Chrome extension."""
     _log_cold_start("run_audio_dubbing_pipeline")
+    # Push initial progress BEFORE heavy imports — frontend stops polling 0%.
+    progress_dict[job_id] = {"stage": "Container ready", "progress": 1}
     import requests as req
 
     # TORCH_HOME / HF_HOME left at defaults — baked model weights live at
@@ -384,6 +393,8 @@ def run_audio_dubbing_pipeline(
     os.environ["MPLCONFIGDIR"] = "/tmp/matplotlib"
     sys.path.append("/root")
     sys.path.append("/root/pipeline")
+
+    progress_dict[job_id] = {"stage": "Loading pipeline modules", "progress": 2}
     from pipeline.main import YTDubPipeline
 
     if not (mistral_api or "").strip():

@@ -14,11 +14,9 @@ load_dotenv()
 
 from pydub import AudioSegment
 import pickle
-from TTS.api import TTS
-from audio_separator.separator import Separator
 import utils
-from speechbrain.inference.interfaces import foreign_class
-from mistralai import Mistral
+# Heavy ML libs (TTS, audio_separator, speechbrain, mistralai) lazy-imported inside
+# the methods that use them — keeps cold-container handler entry fast.
 from utils import (
     download_video_and_extract_audio,
     # diarize_audio,  # commented out – using Mistral for diarization
@@ -133,6 +131,7 @@ class YTDubPipeline:
                 mp3_path = orig_audio_path.replace(".wav", "_mistral.mp3")
                 orig_audio.export(mp3_path, format="mp3", bitrate="64k")
                 logger.info(f"Compressed audio for Mistral: {os.path.getsize(mp3_path) / 1024 / 1024:.1f} MB")
+                from mistralai import Mistral
                 client = Mistral(api_key=mistral_api)
                 with open(mp3_path, "rb") as f:
                     transcription_response = client.audio.transcriptions.complete(
@@ -179,24 +178,32 @@ class YTDubPipeline:
         logger.info(f"Saved {len(sentences)} sentences")
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
-        # 6. Translation
-        if finalSentencesPkl:
-            report("Translating", 35)
-            logger.info("Loading existing final sentences from file...")
-            with open("temp/final_sentences.pkl", "rb") as f:
-                sentences = pickle.load(f)
-        elif translation_mode == "full_transcript" and groq_api:
-            report("Translating (full transcript)", 35)
-            logger.info("Using full-transcript translation mode (Groq bulk call)")
-            sentences = translate_full_transcript(
-                sentences, src_lang, targ,
-                groq_api=groq_api, groq_model=groq_model,
-                progress_callback=progress_callback,
-                progress_start=35, progress_end=58,
-            )
-            with open("temp/final_sentences.pkl", "wb") as f:
-                pickle.dump(sentences, f)
-        else:
+        # 6. Translation + 7a. Emotion classify (run concurrently — share
+        # segments_with_speakers but touch different fields; mapping function
+        # below only adds translation/orig, leaves emotion intact).
+        import concurrent.futures
+
+        os.makedirs("temp/audio_chunks", exist_ok=True)
+        os.makedirs("temp/emotions_audio", exist_ok=True)
+
+        def _translation_task():
+            if finalSentencesPkl:
+                report("Translating", 35)
+                logger.info("Loading existing final sentences from file...")
+                with open("temp/final_sentences.pkl", "rb") as f:
+                    return pickle.load(f)
+            if translation_mode == "full_transcript" and groq_api:
+                report("Translating (full transcript)", 35)
+                logger.info("Using full-transcript translation mode (Groq bulk call)")
+                out = translate_full_transcript(
+                    sentences, src_lang, targ,
+                    groq_api=groq_api, groq_model=groq_model,
+                    progress_callback=progress_callback,
+                    progress_start=35, progress_end=58,
+                )
+                with open("temp/final_sentences.pkl", "wb") as f:
+                    pickle.dump(out, f)
+                return out
             report("Translating", 35)
             if translation_mode == "full_transcript":
                 logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
@@ -226,12 +233,38 @@ class YTDubPipeline:
                                               gemini_api=gemini_api,
                                               gemini_model=gemini_model)
                 sentence_obj['translation'] = translation
-
             with open("temp/final_sentences.pkl", "wb") as f:
                 pickle.dump(sentences, f)
+            return sentences
+
+        def _emotion_task():
+            from speechbrain.inference.interfaces import foreign_class
+            classifier = foreign_class(
+                source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                pymodule_file="custom_interface.py",
+                classname="CustomEncoderWav2vec2Classifier",
+                run_opts={"device": device.type})
+            for seg in segments_with_speakers:
+                if seg.get('speaker') is None:
+                    seg['emotion'] = 'neutral'
+                    continue
+                start = seg['start'] * 1000
+                end = seg['end'] * 1000
+                tmp = f"temp/emotions_audio/emotion_{int(start)}_{int(end)}.wav"
+                orig_audio[start:end].export(tmp, format="wav")
+                seg['emotion'] = classify_emotion(tmp, classifier)
+                os.remove(tmp)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            t_future = ex.submit(_translation_task)
+            e_future = ex.submit(_emotion_task)
+            sentences = t_future.result()
+            e_future.result()
         report("Translation complete", 58)
 
-        # Map translated sentences to segments
+        # Map translated sentences to segments (mutates segments_with_speakers
+        # in place — emotion field set by the parallel task persists).
         final_segments = map_translated_sentences_to_segments(sentences, segments_with_speakers)
         with open("temp/final_segments.pkl", "wb") as f:
             pickle.dump(final_segments, f)
@@ -246,32 +279,16 @@ class YTDubPipeline:
             print(f"  Speaker: {seg.get('speaker')}")
             print(f"  Original text: '{seg.get('text', 'MISSING')}'")
             print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
+            print(f"  Emotion: '{seg.get('emotion', 'MISSING')}'")
             print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
         logger.info("="*40 + "\n")
 
         # 7. Text to Speech
         report("Generating speech", 60)
-        os.makedirs("temp/audio_chunks", exist_ok=True)
-        os.makedirs("temp/emotions_audio", exist_ok=True)
-
-        # 7a. Classify emotions for all segments (fast, runs locally)
         n_segments = len(final_segments)
-        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
-                                   savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
-                                   pymodule_file="custom_interface.py",
-                                   classname="CustomEncoderWav2vec2Classifier",
-                                   run_opts={"device": device.type})
-        for i, segment in enumerate(final_segments):
-            if segment['speaker'] is None:
-                segment['emotion'] = 'neutral'
-                continue
-            start = segment['start']*1000
-            end = segment['end']*1000
-            orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")
-            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav", classifier)
-            os.remove("temp/emotions_audio/emotions.wav")
 
         # 7b. Generate TTS — parallel workers or local
+        # (emotion already classified above in parallel with translation)
         if tts_worker_fn is not None:
             # --- Parallel TTS across multiple GPU containers ---
             logger.info(f"Using {num_tts_workers} parallel TTS workers")
@@ -343,6 +360,7 @@ class YTDubPipeline:
                 cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
             else:
                 logger.info("Using XTTS TTS engine")
+                from TTS.api import TTS
                 tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
 
             for i, segment in enumerate(final_segments):
@@ -397,6 +415,7 @@ class YTDubPipeline:
 
         # 11. Separate background audio
         report("Separating background audio", 90)
+        from audio_separator.separator import Separator
         separator = Separator(model_file_dir="/root/baked_models/audio_separator")
         separator.load_model(model_filename='2_HP-UVR.pth')
         background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
@@ -475,6 +494,7 @@ class YTDubPipeline:
         mp3_path = "temp/original_audio_mistral.mp3"
         orig_audio.export(mp3_path, format="mp3", bitrate="64k")
         logger.info(f"Compressed audio for Mistral: {os.path.getsize(mp3_path) / 1024 / 1024:.1f} MB")
+        from mistralai import Mistral
         client = Mistral(api_key=mistral_api)
         with open(mp3_path, "rb") as f:
             transcription_response = client.audio.transcriptions.complete(
@@ -510,17 +530,25 @@ class YTDubPipeline:
         logger.info(f"Created {len(sentences)} sentences")
         sentences = assign_sentences_to_segments(sentences, segments_with_speakers)
 
-        # 6. Translation
-        if translation_mode == "full_transcript" and groq_api:
-            report("Translating (full transcript)", 35)
-            logger.info("Using full-transcript translation mode (Groq bulk call)")
-            sentences = translate_full_transcript(
-                sentences, src_lang, targ,
-                groq_api=groq_api, groq_model=groq_model,
-                progress_callback=progress_callback,
-                progress_start=35, progress_end=58,
-            )
-        else:
+        # 6. Translation + 7a. Emotion classify (run concurrently — they share
+        # segments_with_speakers but touch different fields; mapping function
+        # below mutates same list to add translation/orig without clobbering
+        # the emotion field that the emotion thread sets).
+        import concurrent.futures
+
+        os.makedirs("temp/audio_chunks", exist_ok=True)
+        os.makedirs("temp/emotions_audio", exist_ok=True)
+
+        def _translation_task():
+            if translation_mode == "full_transcript" and groq_api:
+                report("Translating (full transcript)", 35)
+                logger.info("Using full-transcript translation mode (Groq bulk call)")
+                return translate_full_transcript(
+                    sentences, src_lang, targ,
+                    groq_api=groq_api, groq_model=groq_model,
+                    progress_callback=progress_callback,
+                    progress_start=35, progress_end=58,
+                )
             report("Translating", 35)
             if translation_mode == "full_transcript":
                 logger.warning("translation_mode=full_transcript requested but no groq_api; falling back to per-sentence")
@@ -550,9 +578,37 @@ class YTDubPipeline:
                                               gemini_api=gemini_api,
                                               gemini_model=gemini_model)
                 sentence_obj['translation'] = translation
+            return sentences
+
+        def _emotion_task():
+            from speechbrain.inference.interfaces import foreign_class
+            classifier = foreign_class(
+                source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
+                pymodule_file="custom_interface.py",
+                classname="CustomEncoderWav2vec2Classifier",
+                run_opts={"device": device.type})
+            for seg in segments_with_speakers:
+                if seg.get('speaker') is None:
+                    seg['emotion'] = 'neutral'
+                    continue
+                start = seg['start'] * 1000
+                end = seg['end'] * 1000
+                # Per-segment temp file so we never collide with the other thread.
+                tmp = f"temp/emotions_audio/emotion_{int(start)}_{int(end)}.wav"
+                orig_audio[start:end].export(tmp, format="wav")
+                seg['emotion'] = classify_emotion(tmp, classifier)
+                os.remove(tmp)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            t_future = ex.submit(_translation_task)
+            e_future = ex.submit(_emotion_task)
+            sentences = t_future.result()
+            e_future.result()
         report("Translation complete", 58)
 
-        # Map translated sentences to segments
+        # Map translated sentences to segments (mutates segments_with_speakers
+        # in place — emotion field set by the parallel task persists).
         final_segments = map_translated_sentences_to_segments(sentences, segments_with_speakers)
         logger.info(f"Mapped translations to {len(final_segments)} segments")
 
@@ -563,30 +619,13 @@ class YTDubPipeline:
             print(f"  Speaker: {seg.get('speaker')}")
             print(f"  Original text: '{seg.get('text', 'MISSING')}'")
             print(f"  Translation: '{seg.get('translation', 'MISSING')}'")
+            print(f"  Emotion: '{seg.get('emotion', 'MISSING')}'")
             print(f"  Start: {seg.get('start')}, End: {seg.get('end')}")
         logger.info("="*40 + "\n")
 
         # 7. Text to Speech
         report("Generating speech", 60)
-        os.makedirs("temp/audio_chunks", exist_ok=True)
-        os.makedirs("temp/emotions_audio", exist_ok=True)
-
-        # 7a. Classify emotions for all segments (fast, runs locally)
         n_segments = len(final_segments)
-        classifier = foreign_class(source="speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
-                                   savedir="/root/baked_models/speechbrain/emotion-recognition-wav2vec2-IEMOCAP",
-                                   pymodule_file="custom_interface.py",
-                                   classname="CustomEncoderWav2vec2Classifier",
-                                   run_opts={"device": device.type})
-        for i, segment in enumerate(final_segments):
-            if segment['speaker'] is None:
-                segment['emotion'] = 'neutral'
-                continue
-            start = segment['start']*1000
-            end = segment['end']*1000
-            orig_audio[start:end].export("temp/emotions_audio/emotions.wav", format="wav")
-            segment['emotion'] = classify_emotion("temp/emotions_audio/emotions.wav", classifier)
-            os.remove("temp/emotions_audio/emotions.wav")
 
         # 7b. Generate TTS — parallel workers or local
         if tts_worker_fn is not None:
@@ -652,6 +691,7 @@ class YTDubPipeline:
                 cosyvoice_model = load_cosyvoice(cosyvoice_model_dir)
             else:
                 logger.info("Using XTTS TTS engine")
+                from TTS.api import TTS
                 tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
 
             for i, segment in enumerate(final_segments):
@@ -689,6 +729,7 @@ class YTDubPipeline:
 
         # 10. Separate background audio
         report("Separating background audio", 90)
+        from audio_separator.separator import Separator
         separator = Separator(model_file_dir="/root/baked_models/audio_separator")
         separator.load_model(model_filename='2_HP-UVR.pth')
         background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
