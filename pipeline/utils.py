@@ -314,6 +314,13 @@ MAX_DENOISE_DURATION_SEC = 300  # 5 minutes
 
 
 def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_dir: str = "temp/speakers_audio"):
+    """Slice per-speaker reference WAVs and run DeepFilterNet denoise concurrently.
+
+    Denoise runs in its own subprocess (isolates C++ crashes in df.io). Threads
+    wait on subprocess.run — GIL is released so per-speaker runs truly overlap.
+    """
+    import concurrent.futures
+
     # For voice cloning later
     speakers = set(speaker_turns.values())
     # Compute duration per speaker (seconds)
@@ -321,13 +328,16 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
     for (start, end), spk in speaker_turns.items():
         speaker_durations[spk] += float(end) - float(start)
 
+    # Phase 1: slice each speaker's audio into a wav file (sequential — pydub I/O
+    # is fast and shared AudioSegment isn't thread-safe to slice in parallel).
+    denoise_targets = []  # list of (speaker, wav_path)
     for speaker in speakers:
         speaker_audio = AudioSegment.empty()
         for key, value in speaker_turns.items():
             if speaker == value:
-                start = int(key[0])*1000  # Convert seconds to milliseconds
-                end = int(key[1])*1000
-                speaker_audio += audio[start:end]  # Extract this speaker's audio segments
+                start = int(key[0]) * 1000  # ms
+                end = int(key[1]) * 1000
+                speaker_audio += audio[start:end]
         wav_path = f"{output_dir}/{speaker}.wav"
         speaker_audio.export(wav_path, format="wav")
 
@@ -335,9 +345,16 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
         if dur > MAX_DENOISE_DURATION_SEC:
             logger.info("Skipping denoising for %s (%.1f min > %.1f min limit)", speaker, dur / 60, MAX_DENOISE_DURATION_SEC / 60)
             continue
+        denoise_targets.append((speaker, wav_path))
 
-        # Run denoise in subprocess to isolate C++ crashes (e.g. std::length_error in load_audio)
-        denoise_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "denoise_one.py")
+    if not denoise_targets:
+        return output_dir
+
+    # Phase 2: denoise in parallel subprocesses.
+    denoise_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "denoise_one.py")
+
+    def _denoise_one(target):
+        speaker, wav_path = target
         try:
             result = subprocess.run(
                 [sys.executable, denoise_script, wav_path, wav_path],
@@ -353,9 +370,14 @@ def split_speakers_and_denoise(audio: AudioSegment, speaker_turns: dict, output_
                                result.stderr.decode(errors="replace")[:500],
                                result.stdout.decode(errors="replace")[:500])
         except subprocess.TimeoutExpired:
-            logger.warning("Denoising timed out, using original audio")
+            logger.warning("Denoising timed out for %s, using original audio", speaker)
         except Exception as e:
-            logger.warning("Denoising failed: %s, using original audio", e)
+            logger.warning("Denoising failed for %s: %s, using original audio", speaker, e)
+
+    max_workers = min(len(denoise_targets), 4)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        list(ex.map(_denoise_one, denoise_targets))
+
     return output_dir
 
 

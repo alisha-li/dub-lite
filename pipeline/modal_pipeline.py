@@ -155,7 +155,34 @@ def debug_imports():
     return "all ok"
 
 
-NUM_TTS_WORKERS = 4  # number of parallel GPU containers for TTS
+NUM_TTS_WORKERS = 8  # number of parallel GPU containers for TTS
+
+# Per-container caches for heavy models. Modules load once when a container
+# imports modal_pipeline.py; these caches stay populated for the lifetime of
+# the container so warm invocations reuse loaded weights instead of reloading
+# XTTS / CosyVoice from disk on every call.
+_TTS_CACHE = {}
+
+
+def _get_xtts():
+    """Load XTTS v2 once per tts_worker container, then reuse."""
+    if "xtts" not in _TTS_CACHE:
+        import torch
+        from TTS.api import TTS
+        _TTS_CACHE["xtts"] = TTS(
+            "tts_models/multilingual/multi-dataset/xtts_v2",
+            gpu=torch.cuda.is_available(),
+        )
+    return _TTS_CACHE["xtts"]
+
+
+def _get_cosyvoice(model_dir: str):
+    """Load CosyVoice once per tts_worker container, then reuse."""
+    key = f"cosyvoice::{model_dir}"
+    if key not in _TTS_CACHE:
+        from pipeline.utils import load_cosyvoice
+        _TTS_CACHE[key] = load_cosyvoice(model_dir)
+    return _TTS_CACHE[key]
 
 
 @app.function(
@@ -206,14 +233,14 @@ def tts_worker(batch: dict) -> dict:
         with open(f"/tmp/tts_speakers/{speaker_id}.wav", "wb") as f:
             f.write(wav_bytes)
 
-    # Load TTS model once for this container
+    # Load TTS model once per container (cached at module scope so warm
+    # invocations reuse it).
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_cosyvoice = tts_engine == "cosyvoice"
     if use_cosyvoice:
-        cosyvoice_model = load_cosyvoice(batch.get("cosyvoice_model_dir", "/root/pretrained_models/Fun-CosyVoice3-0.5B"))
+        cosyvoice_model = _get_cosyvoice(batch.get("cosyvoice_model_dir", "/root/pretrained_models/Fun-CosyVoice3-0.5B"))
     else:
-        from TTS.api import TTS
-        tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=torch.cuda.is_available())
+        tts = _get_xtts()
 
     results = {}
     for seg in segments:

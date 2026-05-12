@@ -103,6 +103,21 @@ class YTDubPipeline:
         video_path, orig_audio_path, orig_audio = download_video_and_extract_audio(src)
         report("Extracting audio", 7)
 
+        # Kick off UVR background-music separation in a thread NOW. UVR only
+        # reads orig_audio_path (immutable input), so it runs concurrently with
+        # transcription / translation / emotion / TTS. Saves ~26s on a 14-min
+        # video by hiding the separation pass behind other stages.
+        import concurrent.futures as _cf
+        _separator_pool = _cf.ThreadPoolExecutor(max_workers=1)
+
+        def _separate_background():
+            from audio_separator.separator import Separator
+            sep = Separator(model_file_dir="/root/baked_models/audio_separator")
+            sep.load_model(model_filename='2_HP-UVR.pth')
+            return AudioSegment.from_file(sep.separate(orig_audio_path)[0])
+
+        background_audio_future = _separator_pool.submit(_separate_background)
+
         # 2. Transcription & diarization
         report("Transcribing & diarizing", 10)
         segments_from_diarization = None
@@ -413,12 +428,11 @@ class YTDubPipeline:
         report("Stitching audio", 87)
         stitch_chunks(final_segments)
 
-        # 11. Separate background audio
+        # 11. Wait for the background-separation thread kicked off near the
+        # start. By the time we reach here it has usually already finished.
         report("Separating background audio", 90)
-        from audio_separator.separator import Separator
-        separator = Separator(model_file_dir="/root/baked_models/audio_separator")
-        separator.load_model(model_filename='2_HP-UVR.pth')
-        background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
+        background_audio = background_audio_future.result()
+        _separator_pool.shutdown(wait=True)
         dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")
         logger.info(f"dubbed_audio length: {len(dubbed_audio)}")
         logger.info(f"background_audio length: {len(background_audio)}")
@@ -485,6 +499,21 @@ class YTDubPipeline:
         orig_audio_path = "temp/original_audio.wav"
         orig_audio.export(orig_audio_path, format="wav")
         report("Audio loaded", 7)
+
+        # Kick off UVR background-music separation in a thread NOW. UVR only
+        # reads orig_audio_path (immutable input), so it can run concurrently
+        # with transcription / translation / emotion / TTS. Saves ~26s on a
+        # 14-min video by hiding the separation pass behind other stages.
+        import concurrent.futures as _cf
+        _separator_pool = _cf.ThreadPoolExecutor(max_workers=1)
+
+        def _separate_background():
+            from audio_separator.separator import Separator
+            sep = Separator(model_file_dir="/root/baked_models/audio_separator")
+            sep.load_model(model_filename='2_HP-UVR.pth')
+            return AudioSegment.from_file(sep.separate(orig_audio_path)[0])
+
+        background_audio_future = _separator_pool.submit(_separate_background)
 
         # 2. Transcription & diarization
         report("Transcribing & diarizing", 10)
@@ -727,12 +756,11 @@ class YTDubPipeline:
         report("Stitching audio", 87)
         stitch_chunks(final_segments)
 
-        # 10. Separate background audio
+        # 10. Wait for the background-separation thread kicked off near the
+        # start. By the time we reach here it has usually already finished.
         report("Separating background audio", 90)
-        from audio_separator.separator import Separator
-        separator = Separator(model_file_dir="/root/baked_models/audio_separator")
-        separator.load_model(model_filename='2_HP-UVR.pth')
-        background_audio = AudioSegment.from_file(separator.separate(orig_audio_path)[0])
+        background_audio = background_audio_future.result()
+        _separator_pool.shutdown(wait=True)
         dubbed_audio = AudioSegment.from_file("temp/final_audio.wav")
         logger.info(f"dubbed_audio length: {len(dubbed_audio)}")
         logger.info(f"background_audio length: {len(background_audio)}")
