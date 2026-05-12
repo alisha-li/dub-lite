@@ -282,7 +282,7 @@ def run_dubbing_pipeline(
     finalSentencesPkl: bool = False,
     tts_engine: str = "xtts",
     cosyvoice_model_dir: str = "/root/pretrained_models/Fun-CosyVoice3-0.5B",
-    translation_mode: str = "per_sentence",
+    translation_mode: str = "full_transcript",
 ):
     """Runs the full dubbing pipeline on GPU.
 

@@ -683,11 +683,12 @@ def translate_full_transcript(sentences: list,
     model = groq_model or "openai/gpt-oss-120b"
 
     # Chunking heuristic — Groq counts max_completion_tokens against TPM, so
-    # request "weight" = input + max_completion. Free tier TPM is 8000 for
-    # gpt-oss-120b; Dev tier is ~30k. We size for the free tier so a single
-    # request fits under 8k, with one chunk per minute pacing.
-    MAX_CHARS_PER_CHUNK = 4_000      # ≈ 1.2k input tokens
-    MAX_SENTENCES_PER_CHUNK = 30     # → ~3-4k output tokens worst case
+    # request "weight" = input + max_completion. Dev tier TPM is 30k for
+    # gpt-oss-120b; size each chunk well under that and skip inter-chunk
+    # sleep entirely. (Older free-tier values were 4000 chars / 30 sentences
+    # with 45s sleeps.)
+    MAX_CHARS_PER_CHUNK = 12_000     # ≈ 3.5k input tokens
+    MAX_SENTENCES_PER_CHUNK = 100    # → ~10k output tokens worst case
 
     chunks = []
     cur_start = 0
@@ -708,15 +709,8 @@ def translate_full_transcript(sentences: list,
     from groq import Groq
     client = Groq(api_key=groq_api)
 
-    # Pace chunks vs Groq free-tier TPM (8k tokens/min). Each chunk request
-    # weighs ~5k tokens (input + max_completion reservation), so wait ~45s
-    # between chunks. Skip for the first chunk.
-    INTER_CHUNK_SLEEP_SEC = 45
-
+    # Dev tier (30k TPM) lets us fire chunks back-to-back. No pacing sleep.
     for chunk_i, (start, end) in enumerate(chunks):
-        if chunk_i > 0:
-            logger.info(f"Sleeping {INTER_CHUNK_SLEEP_SEC}s before chunk {chunk_i+1}/{len(chunks)} (TPM pacing)")
-            time.sleep(INTER_CHUNK_SLEEP_SEC)
 
         chunk_sents = sentences[start:end]
         prompt = _build_full_transcript_prompt(chunk_sents, start, src, targ)
