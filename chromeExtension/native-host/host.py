@@ -10,10 +10,9 @@ Chrome's native messaging protocol:
 
 Message types:
 - ping → {pong: true}
-- dub-url {url, target_lang} → {success, job_id} (spawns Modal job)
+- dub-url {url, target_lang} → {success, job_id} (calls droplet API, no Modal SDK locally)
 - poll-job {job_id} → {status, progress, stage, output_url?}
 - transcribe-url {url, language?} → {success, transcript, audio_path} (local whisper.cpp, de-scoped)
-- download-audio {url, target_lang, api_base} → legacy API server path
 """
 
 import sys
@@ -22,8 +21,8 @@ import struct
 import subprocess
 import tempfile
 import os
-import uuid
 import urllib.request
+import urllib.parse
 import urllib.error
 
 # Chrome launches this script with a minimal PATH that doesn't include
@@ -37,21 +36,16 @@ extra_paths = [
 ]
 os.environ["PATH"] = os.pathsep.join(extra_paths) + os.pathsep + os.environ.get("PATH", "")
 
-# Cross-call state: each native messaging invocation is one-shot, so we persist
-# job_id -> modal_call_id mapping on disk between calls.
+# Mac app config (api_base, default_target_lang). Single source of truth.
+CONFIG_PATH = os.path.expanduser("~/Library/Application Support/dub-lite/config.json")
+DEFAULT_API_BASE = "https://dub-lite.alishali.info"
+
+# Per-call state persists job_id metadata so subsequent polls can find it.
 STATE_DIR = os.path.expanduser("~/Library/Application Support/dub-lite/jobs")
 os.makedirs(STATE_DIR, exist_ok=True)
 
-# Project root for loading .env. Two levels up from this script.
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.normpath(os.path.join(SCRIPT_DIR, "..", ".."))
-
 WHISPER_BIN = os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli")
 WHISPER_MODEL = os.path.expanduser("~/whisper.cpp/models/ggml-medium.bin")
-
-MODAL_APP_NAME = "dub-lite"
-MODAL_FN_NAME = "run_audio_dubbing_pipeline"
-MODAL_PROGRESS_DICT = "dub-lite-progress"
 
 
 def read_message():
@@ -70,13 +64,20 @@ def send_message(message):
     sys.stdout.buffer.flush()
 
 
-def load_project_env():
-    """Load .env from the dub-lite project root into os.environ."""
-    from dotenv import load_dotenv
-    env_path = os.path.join(PROJECT_ROOT, ".env")
-    if not os.path.exists(env_path):
-        raise Exception(f".env not found at {env_path}")
-    load_dotenv(env_path)
+def load_app_config():
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def get_api_base():
+    cfg = load_app_config()
+    base = (cfg.get("api_base") or DEFAULT_API_BASE).rstrip("/")
+    return base
 
 
 def save_job_state(job_id, data):
@@ -160,157 +161,94 @@ def transcribe(wav_path, language=None):
         return json.load(f)
 
 
-def upload_to_api(audio_path, target_lang, api_base):
-    """Legacy path: POST audio to API server. Returns job_id."""
-    boundary = "----DubLiteBoundary" + os.urandom(8).hex()
-    filename = os.path.basename(audio_path)
+# --- API server HTTP helpers ---
 
-    with open(audio_path, "rb") as f:
-        audio_bytes = f.read()
-
-    body = b""
-    body += f"--{boundary}\r\n".encode()
-    body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-    body += b"Content-Type: audio/mpeg\r\n\r\n"
-    body += audio_bytes
-    body += b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += b'Content-Disposition: form-data; name="target_language"\r\n\r\n'
-    body += target_lang.encode()
-    body += b"\r\n"
-    body += f"--{boundary}--\r\n".encode()
-
+def _http_post_form(url, form_fields, timeout=30):
+    """POST application/x-www-form-urlencoded to url. Returns parsed JSON."""
+    body = urllib.parse.urlencode(form_fields).encode("utf-8")
     req = urllib.request.Request(
-        f"{api_base}/api/jobs/audio",
+        url,
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            return result["job_id"]
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read())
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode()
-        raise Exception(f"API error {e.code}: {error_body}")
+        raise Exception(f"POST {url} → {e.code}: {e.read().decode(errors='replace')}")
 
 
-def _spaces_client():
-    import boto3
-    from botocore.config import Config
-    return boto3.client(
-        "s3",
-        region_name=os.environ["SPACES_REGION"],
-        endpoint_url=os.environ["SPACES_ENDPOINT"],
-        aws_access_key_id=os.environ["SPACES_ACCESS_KEY"],
-        aws_secret_access_key=os.environ["SPACES_SECRET_KEY"],
-        config=Config(signature_version="s3v4"),
-    )
-
-
-def upload_audio_to_spaces(audio_path, job_id):
-    """Upload audio to Spaces under uploads/<job_id>/. Returns object_key."""
-    client = _spaces_client()
-    bucket = os.environ["SPACES_BUCKET"]
-    object_key = f"uploads/{job_id}/{os.path.basename(audio_path)}"
-    with open(audio_path, "rb") as f:
-        client.put_object(Bucket=bucket, Key=object_key, Body=f.read(), ContentType="audio/mpeg")
-    return object_key
-
-
-def spaces_presigned_get(object_key, expires_in=3600):
-    client = _spaces_client()
-    return client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": os.environ["SPACES_BUCKET"], "Key": object_key},
-        ExpiresIn=expires_in,
-    )
-
-
-def spawn_modal_dub(audio_url, target_lang, job_id):
-    """Spawn the Modal audio dubbing pipeline. Returns modal call object_id."""
-    import modal
-    run_pipeline = modal.Function.from_name(MODAL_APP_NAME, MODAL_FN_NAME)
-
-    # Match what api/app.py does: default to Groq gpt-oss-120b using env GROQ_API_KEY
-    groq_api = (os.environ.get("GROQ_API_KEY") or "").strip() or None
-    mistral_api = (os.environ.get("MISTRAL_API_KEY") or "").strip() or None
-
-    call = run_pipeline.spawn(
-        job_id=job_id,
-        audio_url=audio_url,
-        targ=target_lang,
-        mistral_api=mistral_api,
-        groq_api=groq_api,
-        groq_model="openai/gpt-oss-120b" if groq_api else None,
-        translation_mode="full_transcript",
-    )
-    return call.object_id
-
-
-def get_modal_job_status(modal_call_id, job_id):
-    """Poll Modal. Returns dict with status + progress + (when done) output_url."""
-    import modal
-    progress_dict = modal.Dict.from_name(MODAL_PROGRESS_DICT, create_if_missing=True)
-    call = modal.FunctionCall.from_id(modal_call_id)
-
-    # First, see if it finished
+def _http_get_json(url, timeout=30):
     try:
-        output_key = call.get(timeout=0)
-    except TimeoutError:
-        # Still running — read live progress from Modal Dict
-        prog = None
-        try:
-            prog = progress_dict.get(job_id)
-        except Exception:
-            pass
-        return {
-            "status": "processing",
-            "progress": (prog or {}).get("progress", 0),
-            "stage": (prog or {}).get("stage", "Pipeline running on GPU..."),
-        }
-    except Exception as e:
-        return {"status": "failed", "error": str(e)}
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise Exception(f"GET {url} → {e.code}: {e.read().decode(errors='replace')}")
 
-    # Completed — return presigned download URL
-    return {
-        "status": "completed",
-        "progress": 100,
-        "stage": "Done",
-        "output_url": spaces_presigned_get(output_key, expires_in=86400),
-    }
+
+def _http_put_file(presigned_url, file_path, content_type, timeout=300):
+    """PUT file bytes to a presigned URL."""
+    with open(file_path, "rb") as f:
+        body = f.read()
+    req = urllib.request.Request(
+        presigned_url,
+        data=body,
+        headers={"Content-Type": content_type, "Content-Length": str(len(body))},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        raise Exception(f"PUT spaces → {e.code}: {e.read().decode(errors='replace')}")
 
 
 def handle_dub_url(message):
-    """Main flow: download → upload to Spaces → spawn Modal → return job_id."""
+    """yt-dlp local → presigned PUT to Spaces → POST /api/jobs/audio → job_id."""
     url = message.get("url")
     target_lang = message.get("target_lang", "zh")
     if not url:
         return {"error": "no URL provided"}
 
-    load_project_env()
-
-    job_id = str(uuid.uuid4())
+    api_base = get_api_base()
     audio_path = None
     try:
-        # 1. yt-dlp local
+        # 1. yt-dlp local → /tmp/<random>/audio.mp3
         audio_path = download_audio(url, whisper_ready=False)
-        # 2. Upload audio bytes to Spaces
-        object_key = upload_audio_to_spaces(audio_path, job_id)
-        # 3. Presigned GET URL for Modal to download
-        audio_url = spaces_presigned_get(object_key, expires_in=3600)
-        # 4. Spawn Modal pipeline
-        modal_call_id = spawn_modal_dub(audio_url, target_lang, job_id)
-        # 5. Save state so subsequent polls can find this
+        filename = os.path.basename(audio_path)
+
+        # 2. Get presigned PUT URL from API server
+        presigned = _http_post_form(
+            f"{api_base}/api/upload-url",
+            {"filename": filename},
+        )
+        upload_url = presigned["upload_url"]
+        object_key = presigned["object_key"]
+        content_type = presigned.get("content_type", "audio/mpeg")
+
+        # 3. PUT audio bytes directly to Spaces
+        _http_put_file(upload_url, audio_path, content_type)
+
+        # 4. Create job at API server (server spawns Modal with its own keys)
+        job_resp = _http_post_form(
+            f"{api_base}/api/jobs/audio",
+            {
+                "spaces_object_key": object_key,
+                "target_language": target_lang,
+            },
+        )
+        job_id = job_resp["job_id"]
+
+        # 5. Persist enough to poll later (api_base, source url for retry)
         save_job_state(job_id, {
-            "modal_call_id": modal_call_id,
+            "api_base": api_base,
             "target_lang": target_lang,
             "source_url": url,
+            "object_key": object_key,
         })
-        return {"success": True, "job_id": job_id, "modal_call_id": modal_call_id}
+        return {"success": True, "job_id": job_id}
     finally:
-        # Clean up local audio file
         if audio_path and os.path.exists(audio_path):
             try: os.remove(audio_path)
             except OSError: pass
@@ -319,17 +257,14 @@ def handle_dub_url(message):
 
 
 def handle_poll_job(message):
-    """Poll a job by job_id. Returns current status."""
+    """GET /api/jobs/{id} on the API server. Returns its JSON response."""
     job_id = message.get("job_id")
     if not job_id:
         return {"error": "no job_id provided"}
 
     state = load_job_state(job_id)
-    if not state:
-        return {"error": f"unknown job_id: {job_id}"}
-
-    load_project_env()
-    return get_modal_job_status(state["modal_call_id"], job_id)
+    api_base = (state or {}).get("api_base") or get_api_base()
+    return _http_get_json(f"{api_base}/api/jobs/{job_id}")
 
 
 def main():
@@ -362,21 +297,6 @@ def main():
                 "transcript": transcript,
                 "audio_path": wav_path,
             })
-
-        elif msg_type == "download-audio":
-            # Legacy API-server path. Still supported but new clients should use dub-url.
-            url = message.get("url")
-            target_lang = message.get("target_lang", "zh")
-            api_base = message.get("api_base", "http://localhost:8000")
-            if not url:
-                send_message({"error": "no URL provided"})
-                return
-            audio_path = download_audio(url)
-            file_size = os.path.getsize(audio_path)
-            job_id = upload_to_api(audio_path, target_lang, api_base)
-            os.remove(audio_path)
-            os.rmdir(os.path.dirname(audio_path))
-            send_message({"success": True, "job_id": job_id, "size": file_size})
 
         else:
             send_message({"error": f"unknown message type: {msg_type}"})

@@ -1,0 +1,15 @@
+{
+  "name": "dub-lite-mac",
+  "version": "0.1.0",
+  "description": "Dub Lite Mac app shell. Electron front-end, Python sidecar.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --enable-logging"
+  },
+  "author": "Alisha Li",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^34.0.0"
+  }
+}

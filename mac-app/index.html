@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Dub Lite</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        padding: 24px;
+        background: #1c1c1e;
+        color: #f2f2f7;
+        margin: 0;
+        font-size: 13px;
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 20px;
+      }
+      h1 {
+        font-size: 18px;
+        margin: 0;
+        font-weight: 600;
+      }
+      .icon-btn {
+        background: transparent;
+        border: 1px solid #3a3a3c;
+        color: #8e8e93;
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .icon-btn:hover { color: #f2f2f7; border-color: #8e8e93; }
+      .icon-btn.active { color: #0a84ff; border-color: #0a84ff; }
+      .row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 14px;
+      }
+      label {
+        font-size: 11px;
+        color: #8e8e93;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+      }
+      input[type="text"], input[type="password"], select {
+        background: #2c2c2e;
+        color: #f2f2f7;
+        border: 1px solid #3a3a3c;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      input:focus, select:focus {
+        outline: none;
+        border-color: #0a84ff;
+      }
+      button.primary {
+        background: #0a84ff;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 9px 16px;
+        font-size: 13px;
+        cursor: pointer;
+        font-weight: 500;
+      }
+      button.primary:hover { background: #0070e0; }
+      button.primary:disabled { background: #3a3a3c; cursor: not-allowed; }
+      button.secondary {
+        background: transparent;
+        border: 1px solid #3a3a3c;
+        color: #8e8e93;
+        padding: 8px 14px;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button.secondary:hover { border-color: #8e8e93; color: #f2f2f7; }
+      .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      .progress-section {
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid #2c2c2e;
+        display: none;
+      }
+      .progress-section.visible { display: block; }
+      .stage {
+        font-size: 13px;
+        margin-bottom: 8px;
+      }
+      .stage .label-pct {
+        color: #8e8e93;
+        margin-left: 6px;
+      }
+      .bar-bg {
+        background: #2c2c2e;
+        border-radius: 4px;
+        height: 6px;
+        overflow: hidden;
+      }
+      .bar-fill {
+        background: #0a84ff;
+        height: 100%;
+        width: 0%;
+        transition: width 200ms ease;
+      }
+      .bar-fill.done { background: #30d158; }
+      .bar-fill.err { background: #ff453a; }
+      .result {
+        margin-top: 16px;
+        padding: 12px;
+        background: #2c2c2e;
+        border-radius: 6px;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .result a {
+        color: #0a84ff;
+        text-decoration: none;
+      }
+      .result a:hover { text-decoration: underline; }
+      .err-msg {
+        color: #ff453a;
+        font-size: 12px;
+        margin-top: 8px;
+        font-family: ui-monospace, monospace;
+        white-space: pre-wrap;
+        max-height: 120px;
+        overflow-y: auto;
+      }
+      .debug {
+        margin-top: 28px;
+        padding-top: 16px;
+        border-top: 1px dashed #2c2c2e;
+      }
+      .debug .status {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #8e8e93;
+        margin-bottom: 8px;
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #8e8e93;
+      }
+      .dot.ok { background: #30d158; }
+      .dot.err { background: #ff453a; }
+
+      .panel { display: none; }
+      .panel.visible { display: block; }
+      .settings-note {
+        font-size: 11px;
+        color: #8e8e93;
+        margin-top: -2px;
+      }
+      .settings-section-title {
+        font-size: 11px;
+        color: #8e8e93;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        font-weight: 600;
+        margin: 18px 0 8px 0;
+        padding-bottom: 6px;
+        border-bottom: 1px solid #2c2c2e;
+      }
+      .settings-status {
+        font-size: 12px;
+        color: #8e8e93;
+        margin-left: 10px;
+      }
+      .settings-status.ok { color: #30d158; }
+      .settings-status.err { color: #ff453a; }
+      .plan-badge {
+        display: inline-block;
+        padding: 4px 10px;
+        background: #2c2c2e;
+        border-radius: 999px;
+        font-size: 12px;
+        color: #f2f2f7;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <h1>Dub Lite</h1>
+      <button id="settings-btn" class="icon-btn">⚙ Settings</button>
+    </div>
+
+    <div id="main-panel" class="panel visible">
+      <div class="row">
+        <label for="url">YouTube URL</label>
+        <input id="url" type="text" placeholder="https://www.youtube.com/watch?v=..." />
+      </div>
+
+      <div class="row">
+        <label for="lang">Target language</label>
+        <select id="lang">
+          <option value="zh">Chinese (zh)</option>
+          <option value="es">Spanish (es)</option>
+          <option value="fr">French (fr)</option>
+          <option value="ja">Japanese (ja)</option>
+          <option value="ko">Korean (ko)</option>
+          <option value="de">German (de)</option>
+          <option value="it">Italian (it)</option>
+          <option value="pt">Portuguese (pt)</option>
+        </select>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="dub-btn">Dub video</button>
+      </div>
+
+      <div id="progress-section" class="progress-section">
+        <div class="stage">
+          <span id="stage-text">Starting…</span>
+          <span id="stage-pct" class="label-pct">0%</span>
+        </div>
+        <div class="bar-bg"><div id="bar-fill" class="bar-fill"></div></div>
+        <div id="result" class="result" style="display:none"></div>
+        <div id="err-msg" class="err-msg"></div>
+      </div>
+
+      <div class="debug">
+        <div class="status">
+          <span id="dot" class="dot"></span>
+          <span id="status-text">Sidecar: idle</span>
+        </div>
+        <button class="secondary" id="ping-btn">Ping sidecar</button>
+      </div>
+    </div>
+
+    <div id="settings-panel" class="panel">
+      <div class="settings-section-title">Account</div>
+      <div class="row">
+        <label>Plan</label>
+        <div><span class="plan-badge">Free Beta</span></div>
+        <div class="settings-note">Subscription management coming soon.</div>
+      </div>
+
+      <div class="settings-section-title">Defaults</div>
+      <div class="row">
+        <label for="default-lang">Default target language</label>
+        <select id="default-lang">
+          <option value="zh">Chinese (zh)</option>
+          <option value="es">Spanish (es)</option>
+          <option value="fr">French (fr)</option>
+          <option value="ja">Japanese (ja)</option>
+          <option value="ko">Korean (ko)</option>
+          <option value="de">German (de)</option>
+          <option value="it">Italian (it)</option>
+          <option value="pt">Portuguese (pt)</option>
+        </select>
+      </div>
+
+      <div class="settings-section-title">Advanced</div>
+      <div class="row">
+        <label for="api-base">API server URL</label>
+        <input id="api-base" type="text" placeholder="https://dub-lite.alishali.info" />
+        <div class="settings-note">Leave default unless you're running a local API server.</div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="save-settings-btn">Save</button>
+        <button class="secondary" id="cancel-settings-btn">Cancel</button>
+        <span id="settings-status" class="settings-status"></span>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

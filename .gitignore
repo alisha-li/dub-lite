@@ -17,6 +17,9 @@ inspect_all.py
 # Allow frontend package files (needed for npm install on server)
 !frontend/package.json
 !frontend/package-lock.json
+# Allow mac-app package files (needed for npm install)
+!mac-app/package.json
+!mac-app/package-lock.json
 *.rdb
 
 video comparisons/
