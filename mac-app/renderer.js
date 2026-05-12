@@ -189,7 +189,7 @@ saveSettingsBtn.addEventListener("click", async () => {
   settingsStatus.className = "settings-status";
 
   const cfg = {
-    api_base: apiBaseInput.value.trim() || "http://159.89.182.232:8000",
+    api_base: apiBaseInput.value.trim() || "https://dub-lite.alishali.info",
     default_target_lang: defaultLangSelect.value,
   };
 

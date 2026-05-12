@@ -12,7 +12,7 @@ const CONFIG_DIR = path.join(
 const CONFIG_PATH = path.join(CONFIG_DIR, "config.json");
 
 const DEFAULT_CONFIG = {
-  api_base: "http://159.89.182.232:8000",
+  api_base: "https://dub-lite.alishali.info",
   default_target_lang: "zh",
 };
 
